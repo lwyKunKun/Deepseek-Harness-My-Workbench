@@ -824,6 +824,16 @@ body { overflow: hidden; }
 .side-del:hover { color: var(--err); background: rgba(239, 93, 109, .14); border-color: rgba(239, 93, 109, .35); }
 .side-del:focus-visible { opacity: 1; outline: 2px solid var(--accent); outline-offset: 1px; }
 
+/* 拖拽排序：拖起来的行变淡，落点画一条线 / 整块高亮 */
+.side-leaf, .side-branch-head { position: relative; }
+.side-leaf.dragging { opacity: .35; }
+.side-leaf.drop-before { box-shadow: inset 0 2px 0 0 var(--accent); }
+.side-leaf.drop-after { box-shadow: inset 0 -2px 0 0 var(--accent); }
+.side-branch-head.drop-into {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
 /* 右：选中角色的面板卡 */
 .cat-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: var(--sp-3); }
 .cat-main-head { display: flex; align-items: center; gap: var(--sp-3); flex: 0 0 auto; }

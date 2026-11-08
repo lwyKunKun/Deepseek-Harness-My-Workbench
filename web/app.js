@@ -136,7 +136,8 @@ function groupByCategory() {
     if (!map[c]) { map[c] = { name: c, scenes: [] }; order.push(c); }
     map[c].scenes.push(s);
   });
-  order.sort();
+  // ⚠ 分类顺序 = 各分类**第一个成员在总顺序里的位置**（不按名字排）
+  //   ⇒ 拖动一个角色到别的分类下，那个分类会跟着挪位置。
   return order.map(function (c) { return map[c]; });
 }
 
@@ -169,7 +170,12 @@ function renderCatalog() {
     bh.appendChild(el('span', 'side-twisty', isOpen ? '▾' : '▸'));
     bh.appendChild(el('span', 'side-cat', g.name));
     bh.appendChild(el('span', 'side-count', String(g.scenes.length)));
-    bh.addEventListener('click', function () { setCatalogOpen(g.name, !isOpen); });
+    bh.addEventListener('click', function () {
+      if (Date.now() - DRAG.at < 300) return;      // 刚拖完，别当成点击
+      setCatalogOpen(g.name, !isOpen);
+    });
+    // 拖到分类标题上 ⇒ 落到这个分类的末尾（分类会跟着变）
+    makeDropTarget(bh, g.name, true);
     branch.appendChild(bh);
 
     if (isOpen) {
@@ -187,6 +193,116 @@ function renderCatalog() {
   DOM.view.appendChild(layout);
 }
 
+/* ── 拖拽排序：左树里把角色拖来拖去 ──────────────────────────────
+ * 规则（跟文件管理器一个脾气）：
+ *   · 拖到某个角色上   ⇒ 插到它前面 / 后面（看指针在上半还是下半）
+ *   · 拖到某个分类上   ⇒ 落到那个分类的末尾（**分类也会跟着变**）
+ *   · 分类的顺序       = 各分类第一个成员在总顺序里的位置（自动跟着走）
+ *
+ * 存哪儿：data/scene-order.json（服务端 loadScenes() 会按它排）。
+ */
+var DRAG = { id: '', at: 0 };
+
+function markDrop(el, mode) {
+  clearDropMarks();
+  el.classList.add('drop-' + mode);
+}
+function clearDropMarks() {
+  var root = DOM.view;
+  if (!root) return;
+  root.querySelectorAll('.drop-before, .drop-after, .drop-into').forEach(function (e) {
+    e.classList.remove('drop-before', 'drop-after', 'drop-into');
+  });
+}
+
+/** 让一个元素可以当拖拽源。 */
+function makeDraggable(el, id) {
+  el.setAttribute('draggable', 'true');
+  el.addEventListener('dragstart', function (e) {
+    DRAG.id = id;
+    DRAG.at = Date.now();
+    el.classList.add('dragging');
+    try {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', id);
+    } catch (err) { /* ignore */ }
+  });
+  el.addEventListener('dragend', function () {
+    el.classList.remove('dragging');
+    clearDropMarks();
+    DRAG.id = '';
+  });
+}
+
+/** 让一个元素可以接收放下。 */
+function makeDropTarget(el, targetId, isBranch) {
+  el.addEventListener('dragover', function (e) {
+    if (!DRAG.id || DRAG.id === targetId) return;
+    e.preventDefault();                       // 不 preventDefault 就不许放
+    e.stopPropagation();
+    try { e.dataTransfer.dropEffect = 'move'; } catch (err) { /* ignore */ }
+    var r = el.getBoundingClientRect();
+    if (isBranch) { markDrop(el, 'into'); return; }
+    markDrop(el, (e.clientY < r.top + r.height / 2) ? 'before' : 'after');
+  });
+  el.addEventListener('dragleave', function (e) {
+    if (el.contains(e.relatedTarget)) return;
+    el.classList.remove('drop-before', 'drop-after', 'drop-into');
+  });
+  el.addEventListener('drop', function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    var dragged = DRAG.id;
+    var mode = el.classList.contains('drop-before') ? 'before'
+      : el.classList.contains('drop-after') ? 'after' : 'into';
+    clearDropMarks();
+    DRAG.id = '';
+    if (!dragged || dragged === targetId) return;
+    moveScene(dragged, targetId, mode);
+  });
+}
+
+/** 真的挪：算新顺序 → 存 → 刷。 */
+function moveScene(draggedId, targetId, mode) {
+  var order = STATE.scenes.map(function (s) { return s.id; });
+  var from = order.indexOf(draggedId);
+  if (from < 0) return;
+  order.splice(from, 1);
+
+  var idx;
+  var newCat = null;
+  if (mode === 'into') {
+    // 落到某个分类的末尾（目标可能是分类名，也可能是场景 id）
+    var cat = targetId;
+    var ts = STATE.scenes.filter(function (s) { return s.id === targetId; })[0];
+    if (ts) cat = ts.category || '未分类';
+    var last = -1;
+    order.forEach(function (id, i) {
+      var sc = STATE.scenes.filter(function (s) { return s.id === id; })[0];
+      if (sc && (sc.category || '未分类') === cat) last = i;
+    });
+    idx = last + 1;
+    // 拖到别的分类 ⇒ 分类也得改（写回场景配置）
+    var dragged = STATE.scenes.filter(function (s) { return s.id === draggedId; })[0];
+    if (dragged && (dragged.category || '未分类') !== cat) newCat = cat;
+  } else {
+    var t = order.indexOf(targetId);
+    if (t < 0) return;
+    idx = mode === 'before' ? t : t + 1;
+  }
+  order.splice(idx, 0, draggedId);
+
+  var save = api('POST', '/api/scene/order', { ids: order });
+  if (newCat) {
+    save = save.then(function () {
+      return api('POST', '/api/scene/category', { id: draggedId, category: newCat });
+    });
+  }
+  save.then(function () { return refreshScenes(); })
+    .then(function () { wbToast('顺序已保存'); })
+    .catch(function (e) { wbToast('没挪成：' + (e && e.message || e), true); });
+}
+
 /** 树上的一个叶子 = 一个角色。 */
 function sideLeaf(s, active) {
   var row = el('div', 'side-leaf' + (active ? ' active' : ''));
@@ -198,7 +314,13 @@ function sideLeaf(s, active) {
   del.setAttribute('aria-label', '删除场景「' + s.name + '」');
   del.addEventListener('click', function (e) { e.stopPropagation(); confirmDeleteScene(s); });
   row.appendChild(del);
-  row.addEventListener('click', function () { STATE.selected = s.id; render(); });
+  row.addEventListener('click', function () {
+    if (Date.now() - DRAG.at < 300) return;      // 刚拖完，别当成点击
+    STATE.selected = s.id;
+    render();
+  });
+  makeDraggable(row, s.id);
+  makeDropTarget(row, s.id, false);
   return row;
 }
 

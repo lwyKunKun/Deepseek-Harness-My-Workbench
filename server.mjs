@@ -478,6 +478,20 @@ export async function handleRequest(req, res) {
       return;
     }
 
+    // ── 改一个场景的分类（树上把它拖到别的分类下时用） ──────────────
+    if (p === '/api/scene/category' && req.method === 'POST') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      const id = String(body.id || '').trim();
+      const cat = String(body.category || '').trim() || '未分类';
+      const file = path.join(PATHS.scenarios, id + '.json');
+      const raw = readJson(file);
+      if (!raw) { sendJson(res, 404, { ok: false, error: '没有这个场景：' + id }); return; }
+      raw.category = cat;
+      writeJson(file, raw);
+      sendJson(res, 200, { ok: true, id, category: cat });
+      return;
+    }
+
     // ── 把一条真实会话钉到场景里的某个面板 ───────────────────────
     if (p === '/api/scene/bind' && req.method === 'POST') {
       const body = JSON.parse((await readBody(req)) || '{}');
