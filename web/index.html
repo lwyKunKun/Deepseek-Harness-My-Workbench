@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!--
+    CSP：脚本只准同源（不外链、不 eval）。
+    frame-src 放开 127.0.0.1 的各个端口 —— 每个 AI 面板跑在自己的端口上（= 独立 localStorage）。
+  -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:*; frame-src 'self' http://127.0.0.1:*;" />
+  <title>我的工作台</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header id="topbar">
+    <div class="brand">
+      <span class="brand-mark">◈</span>
+      <span class="brand-name">我的工作台</span>
+    </div>
+    <nav id="mainnav">
+      <button class="navbtn active" data-mode="scenes">场景</button>
+      <button class="navbtn" data-mode="registry">注册</button>
+      <button class="navbtn" data-mode="desk">工作台</button>
+    </nav>
+    <div class="top-right">
+      <span id="status-dot" class="status-dot"></span>
+      <span id="status-text">连接中…</span>
+    </div>
+  </header>
+
+  <main id="view"></main>
+
+  <div id="toast-host"></div>
+
+  <div id="engine-dialog" class="dialog">
+    <div class="dialog-card">
+      <h3>引擎连接</h3>
+      <p class="dialog-p">
+        工作台把 DSH 引擎界面内嵌在 AI 面板里。引擎地址：<code id="engine-base">127.0.0.1:3080</code>
+      </p>
+      <p class="dialog-p">
+        第一次用、或换了浏览器：把 <code>dsh web</code> 启动时打印的那行 URL 里的 token 贴进来
+        （形如 <code>http://127.0.0.1:3080/?token=XXXX</code>）。
+      </p>
+      <input id="engine-token" class="dialog-input" placeholder="token" autocomplete="off" />
+      <div id="engine-msg" class="dialog-msg"></div>
+      <div class="dialog-actions">
+        <button id="btn-close" class="chip">关闭</button>
+        <button id="btn-link" class="chip solid">连接</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/panels.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

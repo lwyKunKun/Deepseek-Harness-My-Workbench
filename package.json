@@ -1,0 +1,14 @@
+{
+  "name": "my-workbench",
+  "version": "0.2.0",
+  "private": true,
+  "description": "我的定制工作台 —— 多场景 AI 工作台（场景 / 面板 / 会话绑定 / 派单闭环 / 权限分档 / 仪表盘）",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
