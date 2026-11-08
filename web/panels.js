@@ -1012,7 +1012,89 @@ PANELS.project = function (body, meta, head) {
   var list = wbEl('div', 'proj-list');
   wrap.appendChild(list);
 
+  /* ── 上传：把文件拖进来，或点按钮选 ─────────────────────────── */
+  var up = wbEl('div', 'up-box');
+  var drop = wbEl('div', 'up-drop');
+  drop.textContent = '把文件拖到这里，或点下面选';
+  up.appendChild(drop);
+  var pick = wbEl('button', 'chip', '选择文件');
+  up.appendChild(pick);
+  var pickDir = wbEl('button', 'chip', '选择文件夹');
+  up.appendChild(pickDir);
+  var upNote = wbEl('div', 'up-note', '');
+  up.appendChild(upNote);
+  var inputEl = wbEl('input');
+  inputEl.type = 'file';
+  inputEl.multiple = true;
+  inputEl.style.display = 'none';
+  up.appendChild(inputEl);
+  var dirEl = wbEl('input');
+  dirEl.type = 'file';
+  dirEl.multiple = true;
+  dirEl.webkitdirectory = true;      // 选整个文件夹
+  dirEl.style.display = 'none';
+  up.appendChild(dirEl);
+  wrap.appendChild(up);
+
   var root = '';
+
+  function uploadFiles(files) {
+    if (!files || !files.length) return;
+    var list2 = Array.prototype.slice.call(files);
+    upNote.textContent = '正在传 ' + list2.length + ' 个文件…';
+    var done = 0, failed = 0;
+    list2.forEach(function (f) {
+      // 选文件夹时，webkitRelativePath 带着目录结构 ⇒ 保留它
+      var rel = f.webkitRelativePath || '';
+      var dir = '';
+      var fname = f.name;
+      if (rel) {
+        var cut = rel.lastIndexOf('/');
+        if (cut > 0) { dir = rel.slice(0, cut); fname = rel.slice(cut + 1); }
+      }
+      var q = '?scene=' + encodeURIComponent(sceneId)
+        + '&name=' + encodeURIComponent(fname)
+        + (dir ? '&dir=' + encodeURIComponent(dir) : '');
+      fetch(wbBase() + '/api/upload' + q, { method: 'POST', body: f })
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok && j.ok, j: j }; }); })
+        .then(function (res) {
+          if (res.ok) done++; else failed++;
+          var msg = res.ok ? '✓ ' + f.name : '✗ ' + f.name + '：' + (res.j && res.j.error || '失败');
+          upNote.textContent = msg + '（' + (done + failed) + '/' + list2.length + '）';
+          if (failed) upNote.className = 'up-note bad';
+          if (done + failed === list2.length) {
+            upNote.textContent = '传完：成功 ' + done + ' 个' + (failed ? '，失败 ' + failed + ' 个' : '');
+            if (!failed) wbToast('传完了：' + done + ' 个文件');
+            load();
+          }
+        })
+        .catch(function (e) {
+          failed++;
+          upNote.textContent = '✗ ' + f.name + '：' + (e && e.message || e);
+        });
+    });
+  }
+
+  drop.addEventListener('dragover', function (e) {
+    e.preventDefault(); e.stopPropagation();
+    drop.classList.add('over');
+  });
+  drop.addEventListener('dragleave', function () { drop.classList.remove('over'); });
+  drop.addEventListener('drop', function (e) {
+    e.preventDefault(); e.stopPropagation();
+    drop.classList.remove('over');
+    uploadFiles(e.dataTransfer && e.dataTransfer.files);
+  });
+  pick.addEventListener('click', function () { inputEl.click(); });
+  inputEl.addEventListener('change', function () {
+    uploadFiles(inputEl.files);
+    inputEl.value = '';
+  });
+  pickDir.addEventListener('click', function () { dirEl.click(); });
+  dirEl.addEventListener('change', function () {
+    uploadFiles(dirEl.files);
+    dirEl.value = '';
+  });
 
   function load() {
     wbApi('GET', '/api/scene/project?id=' + encodeURIComponent(sceneId)).then(function (r) {

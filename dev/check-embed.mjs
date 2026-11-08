@@ -274,6 +274,33 @@ try {
   })()`);
   console.log('项目目录面板：' + proj);
 
+  // 上传：在页面里造一个 File，往拖放区一丢
+  const up = await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    if (!host) return 'no-shadow';
+    var p = host.shadowRoot.querySelector('[data-panel-id="work-proj"]');
+    if (!p) return 'no-panel';
+    var drop = p.querySelector('.up-drop');
+    if (!drop) return 'no-dropzone';
+    var dt = new DataTransfer();
+    dt.items.add(new File(['export const fromUi = 1;\\n'], 'from-ui.ts', { type: 'text/plain' }));
+    drop.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }));
+    var over = drop.className;
+    drop.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+    return 'dropped; dragover 时=' + over;
+  })()`);
+  console.log('上传（拖放）：' + up);
+  await sleep(4000);
+  const upNote = await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    var p = host && host.shadowRoot.querySelector('[data-panel-id="work-proj"]');
+    var n = p && p.querySelector('.up-note');
+    return n ? n.textContent : '(没有提示)';
+  })()`);
+  console.log('上传结果：' + upNote);
+
   console.log('');
   console.log('── ③ 控制台报错 ──');
   if (!cdp.errors.length) console.log('   ✓ 没有报错');

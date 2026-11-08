@@ -79,6 +79,21 @@ function readBody(req, limit = 8 * 1024 * 1024) {
   });
 }
 
+/** 读原始字节（上传文件用 —— 不能转字符串，二进制会坏）。 */
+function readBodyBuf(req, limit = 256 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > limit) { reject(new Error('文件太大（上限 256MB）')); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
 function serveStatic(res, file, { inject = false } = {}) {
   if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
     send(res, 404, '找不到：' + path.basename(file));
@@ -504,6 +519,81 @@ export async function handleRequest(req, res) {
       raw.category = cat;
       writeJson(file, raw);
       sendJson(res, 200, { ok: true, id, category: cat });
+      return;
+    }
+
+    // ── 上传文件：把文件传进某个角色的目录 ──────────────────────────
+    //    目标：角色绑了项目目录 ⇒ 传进项目目录；没绑 ⇒ 传进它的记忆目录。
+    //    权限：走同一套分档判定（它自己的地盘才能写，别的角色写就是越界）。
+    if (p === '/api/upload' && req.method === 'POST') {
+      const scene = String(url.searchParams.get('scene') || '').trim();
+      const rawName = String(url.searchParams.get('name') || '').trim();
+      const sub = String(url.searchParams.get('dir') || '').trim();
+      if (!scene) { sendJson(res, 400, { ok: false, error: '要传到哪个场景？' }); return; }
+      const sc = getScene(scene);
+      if (!sc) { sendJson(res, 404, { ok: false, error: '没有这个场景：' + scene }); return; }
+      if (!rawName) { sendJson(res, 400, { ok: false, error: '要传哪个文件？' }); return; }
+
+      const name = path.basename(rawName);            // 文件名只取最后一段（不许带路径）
+      if (!name || name === '.' || name === '..') { sendJson(res, 400, { ok: false, error: '文件名不对' }); return; }
+      // 子目录：只许相对路径，不许往上爬
+      let subRel = '';
+      if (sub) {
+        const norm = path.normalize(sub).replace(/^([/\\.]+)/, '');
+        if (norm.split(/[/\\]/).includes('..')) { sendJson(res, 400, { ok: false, error: '子目录不对' }); return; }
+        subRel = norm;
+      }
+
+      // 目标根：项目目录优先，否则角色的记忆目录
+      const projectRoot = String(sc.projectRoot || '').trim();
+      const base = projectRoot
+        ? path.resolve(projectRoot)
+        : path.resolve(PATHS.memory, sc.id, '项目记忆');
+      const dir = subRel ? path.join(base, subRel) : base;
+      if (!dir.startsWith(base)) { sendJson(res, 400, { ok: false, error: '子目录不对' }); return; }
+
+      // 权限：这个路径归不归它
+      const rel = dir.startsWith(PATHS.root + path.sep) || dir === PATHS.root
+        ? path.relative(PATHS.root, dir).split(path.sep).join('/')
+        : dir;                                    // 工作台之外 ⇒ 用绝对路径
+      const target = rel + '/' + name;
+      const v = authority.check(target, scene);
+      if (!v.allowed) {
+        sendJson(res, 403, { ok: false, error: v.why, verdict: v });
+        return;
+      }
+
+      let buf;
+      try { buf = await readBodyBuf(req); } catch (e) {
+        sendJson(res, 400, { ok: false, error: String(e && e.message || e) });
+        return;
+      }
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, name), buf);
+      } catch (e) {
+        sendJson(res, 500, { ok: false, error: '写不进去：' + (e && e.message || e) });
+        return;
+      }
+
+      // 写痕留一笔（内容只记摘要，二进制不整份进日志）
+      writelog.appendApiWrite({
+        path: target,
+        scene,
+        sceneName: sc.name,
+        time: Date.now(),
+        tool: 'upload',
+        content: '«上传 ' + buf.length + ' 字节»',
+      });
+
+      sendJson(res, 200, {
+        ok: true,
+        scene,
+        path: target,
+        abs: path.join(dir, name),
+        bytes: buf.length,
+        where: projectRoot ? '项目目录' : '场景记忆目录',
+      });
       return;
     }
 
