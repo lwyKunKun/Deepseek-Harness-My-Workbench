@@ -126,9 +126,9 @@ try {
     var host=null;
     document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
     if (!host) return 'no-shadow';
-    var card = host.shadowRoot.querySelector('.scene-card[data-sc-id="${TMP_ID}"]');
+    var card = host.shadowRoot.querySelector('.side-leaf[data-sc-id="${TMP_ID}"]');
     if (!card) return 'no-card';
-    var b = card.querySelector('.scene-del');
+    var b = card.querySelector('.side-del');
     if (!b) return 'no-button';
     b.click();
     return 'clicked';
@@ -178,7 +178,7 @@ try {
   const after = await cdp.eval(`(function(){
     var host=null;
     document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
-    var card = host && host.shadowRoot.querySelector('.scene-card[data-sc-id="${TMP_ID}"]');
+    var card = host && host.shadowRoot.querySelector('.side-leaf[data-sc-id="${TMP_ID}"]');
     var toast = host && host.shadowRoot.querySelector('#toast-host');
     return { cardStillThere: !!card, toast: toast ? toast.innerText.replace(/\\s+/g,' ').slice(0,120) : '' };
   })()`);

@@ -14,6 +14,7 @@ var STATE = {
   scenes: [],
   mode: 'scenes',        // scenes | registry | desk
   open: null,            // 打开的场景 id（详情页）
+  selected: '',          // 场景页左树里选中的角色（右边显示它的卡）
   category: '全部',
   panelPorts: [],
   usedPorts: {},
@@ -108,33 +109,25 @@ function render() {
     renderDesk();
   }
 }
-
-/* ── ① 场景页：目录（树 ⇄ 网格） ─────────────────────────────────
- * 两种看法：
- *   树（默认）：分类 → 角色，两层，收起状态记在本地
- *   网格：原来的卡片目录（按分类筛选）
+/* ── ① 场景页：左树 + 右卡 ───────────────────────────────────────
+ * 照着视频里那版「场景-记忆机制（记忆文件+索引）-界面」做的：
+ *   左边一列 = 场景树（分类是枝，角色是叶）
+ *   右边     = 选中角色的「面板卡」（身份卡 / 项目信息 / 索引 / 体检 / AI 会话）
+ * 点左边树里的角色 ⇒ 右边换成它的卡。
  */
-var CAT_VIEW_KEY = 'wb.cat.view';
 var CAT_OPEN_KEY = 'wb.cat.open';
 
-function catalogView() {
-  try { return localStorage.getItem(CAT_VIEW_KEY) || 'tree'; } catch (e) { return 'tree'; }
-}
-function setCatalogView(v) {
-  try { localStorage.setItem(CAT_VIEW_KEY, v); } catch (e) { /* ignore */ }
-  render();
-}
-function openSet() {
+function catalogOpen() {
   try { return JSON.parse(localStorage.getItem(CAT_OPEN_KEY) || '{}') || {}; } catch (e) { return {}; }
 }
-function setOpen(cat, on) {
-  var s = openSet();
+function setCatalogOpen(cat, on) {
+  var s = catalogOpen();
   if (on) s[cat] = 1; else delete s[cat];
   try { localStorage.setItem(CAT_OPEN_KEY, JSON.stringify(s)); } catch (e) { /* ignore */ }
   render();
 }
 
-/** 场景按分类分组（顺序：分类名，按角色数少的排前面？—— 不，按名字排，稳定）。 */
+/** 场景按分类分组（分类名排序，稳）。 */
 function groupByCategory() {
   var map = {};
   var order = [];
@@ -147,153 +140,66 @@ function groupByCategory() {
   return order.map(function (c) { return map[c]; });
 }
 
+/** 当前选中的角色（默认第一个）。 */
+function selectedSceneId() {
+  var ids = STATE.scenes.map(function (s) { return s.id; });
+  if (STATE.selected && ids.indexOf(STATE.selected) >= 0) return STATE.selected;
+  return ids[0] || '';
+}
+
 function renderCatalog() {
   var groups = groupByCategory();
+  var layout = el('div', 'cat-layout');
 
-  // 头部：左边统计，右边切换看法
-  var head = el('div', 'cat-head');
-  head.appendChild(el('div', 'cat-title', '角色（' + STATE.scenes.length + '）'));
-  var toggle = el('div', 'cat-toggle');
-  [['tree', '🌳 树'], ['grid', '▦ 网格']].forEach(function (pair) {
-    var b = el('button', 'cat-tbtn' + (catalogView() === pair[0] ? ' active' : ''), pair[1]);
-    b.title = pair[0] === 'tree' ? '按分类展开的树' : '卡片目录';
-    b.addEventListener('click', function (e) { e.stopPropagation(); setCatalogView(pair[0]); });
-    toggle.appendChild(b);
-  });
-  head.appendChild(toggle);
-  DOM.view.appendChild(head);
+  /* ── 左：场景树 ────────────────────────────────────────────── */
+  var side = el('div', 'cat-side');
+  var sideHead = el('div', 'cat-side-head');
+  sideHead.appendChild(el('div', 'cat-side-title', '工作台 · 场景'));
+  sideHead.appendChild(el('div', 'cat-side-count', STATE.scenes.length + ' 个场景'));
+  side.appendChild(sideHead);
 
-  if (catalogView() === 'grid') { renderCardGrid(groups); return; }
-  renderTree(groups);
-}
-
-/** 网格看法：原来的卡片目录 + 分类筛选条。 */
-function renderCardGrid(groups) {
-  var cats = ['全部'].concat(groups.map(function (g) { return g.name; }));
-  if (cats.indexOf(STATE.category) < 0) STATE.category = '全部';
-
-  var bar = el('div', 'cat-bar');
-  cats.forEach(function (c) {
-    var b = el('button', 'cat-btn' + (STATE.category === c ? ' active' : ''), c);
-    b.addEventListener('click', function () { STATE.category = c; render(); });
-    bar.appendChild(b);
-  });
-  DOM.view.appendChild(bar);
-
-  var grid = el('div', 'card-grid');
-  var list = STATE.scenes.filter(function (s) {
-    return STATE.category === '全部' || s.category === STATE.category;
-  });
-  if (!list.length) {
-    grid.appendChild(el('div', 'todo-empty', '这个分类还没有场景 —— 去「注册」登记一个'));
-  }
-  list.forEach(function (s) { grid.appendChild(sceneCard(s)); });
-  DOM.view.appendChild(grid);
-}
-
-/** 树看法：分类是枝，角色是叶。 */
-function renderTree(groups) {
-  if (!groups.length) {
-    DOM.view.appendChild(el('div', 'todo-empty', '还没有角色 —— 去「注册」登记一个'));
-    return;
-  }
-  var tree = el('div', 'scene-tree');
-  var open = openSet();
-
+  var tree = el('div', 'side-tree');
+  var sel = selectedSceneId();
+  var open = catalogOpen();
   groups.forEach(function (g) {
     var isOpen = open[g.name] === undefined ? true : !!open[g.name];
-    var node = el('div', 'tree-node');
-    var head = el('div', 'tree-head');
-    head.appendChild(el('span', 'tree-twisty', isOpen ? '▾' : '▸'));
-    head.appendChild(el('span', 'tree-cat', g.name));
-    head.appendChild(el('span', 'tree-count', String(g.scenes.length)));
-    head.addEventListener('click', function () { setOpen(g.name, !isOpen); });
-    node.appendChild(head);
+    var branch = el('div', 'side-branch');
+
+    var bh = el('div', 'side-branch-head');
+    bh.appendChild(el('span', 'side-twisty', isOpen ? '▾' : '▸'));
+    bh.appendChild(el('span', 'side-cat', g.name));
+    bh.appendChild(el('span', 'side-count', String(g.scenes.length)));
+    bh.addEventListener('click', function () { setCatalogOpen(g.name, !isOpen); });
+    branch.appendChild(bh);
 
     if (isOpen) {
-      var kids = el('div', 'tree-kids');
-      g.scenes.forEach(function (s) { kids.appendChild(sceneLeaf(s)); });
-      node.appendChild(kids);
+      var kids = el('div', 'side-kids');
+      g.scenes.forEach(function (s) { kids.appendChild(sideLeaf(s, s.id === sel)); });
+      branch.appendChild(kids);
     }
-    tree.appendChild(node);
+    tree.appendChild(branch);
   });
-  DOM.view.appendChild(tree);
+  side.appendChild(tree);
+  layout.appendChild(side);
+
+  /* ── 右：选中角色的面板卡 ────────────────────────────────────── */
+  layout.appendChild(renderSceneCards(sel));
+  DOM.view.appendChild(layout);
 }
 
 /** 树上的一个叶子 = 一个角色。 */
-function sceneLeaf(s) {
-  var row = el('div', 'tree-leaf');
+function sideLeaf(s, active) {
+  var row = el('div', 'side-leaf' + (active ? ' active' : ''));
   row.setAttribute('data-sc-id', s.id);
-
-  row.appendChild(el('div', 'leaf-icon', s.icon || '●'));
-
-  var main = el('div', 'leaf-main');
-  var top = el('div', 'leaf-top');
-  top.appendChild(el('span', 'leaf-name', s.name));
-  main.appendChild(top);
-  main.appendChild(el('div', 'leaf-duty', s.duty || s.description || ''));
-  if (s.skills && s.skills.length) {
-    var tags = el('div', 'leaf-tags');
-    s.skills.forEach(function (t) { tags.appendChild(el('span', 'leaf-tag', t)); });
-    main.appendChild(tags);
-  }
-  row.appendChild(main);
-
-  var side = el('div', 'leaf-side');
-  var ai = (s.panels || []).filter(function (p) { return p.type === 'harness'; });
-  side.appendChild(el('span', 'leaf-stat', (s.panels || []).length + ' 面板 · 会话 ' + ai.filter(function (p) { return p.sessionId; }).length + '/' + ai.length));
-  var open = el('button', 'panel-btn solid', '打开');
-  open.addEventListener('click', function (e) { e.stopPropagation(); openScene(s.id); });
-  side.appendChild(open);
-  var del = el('button', 'scene-del', '🗑');
+  row.appendChild(el('span', 'side-dot', s.icon || '●'));
+  row.appendChild(el('span', 'side-leaf-name', s.name));
+  var del = el('button', 'side-del', '🗑');
   del.title = '删除这个场景';
   del.setAttribute('aria-label', '删除场景「' + s.name + '」');
   del.addEventListener('click', function (e) { e.stopPropagation(); confirmDeleteScene(s); });
-  side.appendChild(del);
-  row.appendChild(side);
-
-  row.addEventListener('click', function () { openScene(s.id); });
+  row.appendChild(del);
+  row.addEventListener('click', function () { STATE.selected = s.id; render(); });
   return row;
-}
-
-function sceneCard(s) {
-  var card = el('div', 'scene-card');
-  card.setAttribute('data-sc-id', s.id);
-
-  var top = el('div', 'scene-card-top');
-  top.appendChild(el('div', 'scene-icon', s.icon || '●'));
-  var names = el('div', 'scene-names');
-  names.appendChild(el('div', 'scene-name', s.name));
-  names.appendChild(el('div', 'scene-cat', s.category || ''));
-  top.appendChild(names);
-  card.appendChild(top);
-
-  card.appendChild(el('div', 'scene-duty', s.duty || s.description || ''));
-
-  if (s.skills && s.skills.length) {
-    var tags = el('div', 'scene-tags');
-    s.skills.forEach(function (t) { tags.appendChild(el('span', 'scene-tag', t)); });
-    card.appendChild(tags);
-  }
-
-  var foot = el('div', 'scene-card-foot');
-  var st = el('span', 'scene-stat');
-  var ai = (s.panels || []).filter(function (p) { return p.type === 'harness'; });
-  var bound = ai.filter(function (p) { return p.sessionId; }).length;
-  st.textContent = (s.panels || []).length + ' 面板 · 会话 ' + bound + '/' + ai.length;
-  foot.appendChild(st);
-  var open = el('button', 'panel-btn solid', '打开');
-  open.addEventListener('click', function (e) { e.stopPropagation(); openScene(s.id); });
-  foot.appendChild(open);
-  var del = el('button', 'scene-del', '🗑');
-  del.title = '删除这个场景';
-  del.setAttribute('aria-label', '删除场景「' + s.name + '」');
-  del.addEventListener('click', function (e) { e.stopPropagation(); confirmDeleteScene(s); });
-  foot.appendChild(del);
-  card.appendChild(foot);
-
-  card.addEventListener('click', function () { openScene(s.id); });
-  return card;
 }
 
 /* ── 删除场景：先看清楚要删什么，再让它删 ──────────────────────── */
@@ -319,7 +225,7 @@ function confirmDeleteScene(s) {
         if (r.sessions && r.sessions.length) bits.push(r.sessions.length + ' 条会话已归档');
         if (r.warnings && r.warnings.length) bits.push(r.warnings.length + ' 条警告');
         if (r.trash) bits.push('已移到 ' + r.trash + '（可还原）');
-        STATE.open = null;
+        if (STATE.selected === s.id) STATE.selected = '';
         return refreshScenes().then(function () {
           wbToast('已删除「' + r.name + '」' + (bits.length ? '（' + bits.join('、') + '）' : ''));
           return { ok: true };
@@ -327,6 +233,126 @@ function confirmDeleteScene(s) {
       });
     },
   });
+}
+
+/** 字节数 → 人看的单位。 */
+function kb(bytes) {
+  var n = Number(bytes) || 0;
+  if (n < 1024) return n + ' B';
+  return (Math.round(n / 1024 * 10) / 10) + 'K';
+}
+
+/** 一张面板卡的壳子（内容稍后填）。 */
+function panelCard(title, sub) {
+  var card = el('div', 'panel-card');
+  var head = el('div', 'panel-card-head');
+  head.appendChild(el('div', 'panel-card-title', title));
+  head.appendChild(el('div', 'panel-card-sub', sub || ''));
+  card.appendChild(head);
+  var body = el('div', 'panel-card-body');
+  body.appendChild(el('div', 'panel-card-empty', '读取中…'));
+  card.appendChild(body);
+  card.body = body;         // 方便后面填内容
+  return card;
+}
+
+/** 把一段文字塞进卡片（按行截断，最多 maxLines 行）。 */
+function fillCard(card, text, maxLines) {
+  if (!card || !card.body) return;
+  card.body.innerHTML = '';
+  var lines = String(text || '').split('\n').filter(function (l) { return l.trim() !== ''; });
+  if (!lines.length) {
+    card.body.appendChild(el('div', 'panel-card-empty', '（还没有内容）'));
+    return;
+  }
+  lines.slice(0, maxLines || 9).forEach(function (l) {
+    card.body.appendChild(el('div', 'panel-card-line', l.replace(/^#+\s*/, '')));
+  });
+  if (lines.length > (maxLines || 9)) {
+    card.body.appendChild(el('div', 'panel-card-more', '… 还有 ' + (lines.length - (maxLines || 9)) + ' 行'));
+  }
+}
+
+/** 右栏：选中角色的五张卡。 */
+function renderSceneCards(id) {
+  var sc = STATE.scenes.filter(function (s) { return s.id === id; })[0];
+  var main = el('div', 'cat-main');
+  if (!sc) {
+    main.appendChild(el('div', 'todo-empty', '还没有角色 —— 去「注册」登记一个'));
+    return main;
+  }
+
+  /* 头部：角色是谁 */
+  var head = el('div', 'cat-main-head');
+  head.appendChild(el('div', 'cat-main-icon', sc.icon || '●'));
+  var nm = el('div', 'cat-main-names');
+  nm.appendChild(el('div', 'cat-main-name', sc.name));
+  nm.appendChild(el('div', 'cat-main-duty', sc.duty || sc.description || ''));
+  head.appendChild(nm);
+  if (sc.skills && sc.skills.length) {
+    var tags = el('div', 'cat-main-tags');
+    sc.skills.forEach(function (t) { tags.appendChild(el('span', 'cat-main-tag', t)); });
+    head.appendChild(tags);
+  }
+  var open = el('button', 'panel-btn solid', '打开场景');
+  open.addEventListener('click', function () { openScene(sc.id); });
+  head.appendChild(open);
+  main.appendChild(head);
+
+  /* 五张卡 */
+  var grid = el('div', 'panel-card-grid');
+  var cId = panelCard('身份卡', '每场读的那张卡');
+  var cMem = panelCard('项目信息', '§〇 开场先读');
+  var cIdx = panelCard('索引', '场景索引 · 资产索引');
+  var cHeal = panelCard('体检', '这个场景的');
+  var cAi = panelCard('AI 会话', '常驻会话');
+  [cId, cMem, cIdx, cHeal, cAi].forEach(function (c) { grid.appendChild(c); });
+  main.appendChild(grid);
+
+  /* 填内容（异步，取完再填） */
+  api('GET', '/api/memory?scene=' + encodeURIComponent(id)).then(function (r) {
+    if (!r || !r.ok) { fillCard(cId, '（读不到）'); return; }
+    fillCard(cId, (r.card || '').replace(/^#.*\n/, '').trim(), 10);
+    var sec0 = String(r.main || '').split(/^##\s*§〇.*$/m)[1] || '';
+    fillCard(cMem, sec0.trim(), 9);
+    var h = r.health || {};
+    var problems = (h.problems || []);
+    var warns = (h.warns || []);
+    var lines = [];
+    if (problems.length) lines = lines.concat(problems);
+    if (warns.length) lines = lines.concat(warns);
+    if (!lines.length) lines.push('✓ 一切正常');
+    lines.push('§〇 ' + kb(h.sec0) + ' / 4K');
+    lines.push('主文件 ' + kb(h.bytes) + ' / 25K');
+    fillCard(cHeal, lines.join('\n'), 9);
+  });
+
+  api('GET', '/api/index').then(function (r) {
+    if (!r || !r.ok) return;
+    var rows = (r.rows || []).filter(function (x) {
+      return x.kind === '场景' ? x.key === id : (x.kind === '资产' && String(x.key).indexOf(id + '/') === 0);
+    });
+    var lines = rows.map(function (x) {
+      return x.name + '　' + x.where + '　' + kb(x.size);
+    });
+    fillCard(cIdx, lines.join('\n'), 9);
+  });
+
+  /* AI 会话那张卡：会话信息 + 打开按钮（真会话界面太大，嵌不进卡片） */
+  var ai = (sc.panels || []).filter(function (p) { return p.type === 'harness'; })[0];
+  cAi.body.innerHTML = '';
+  if (ai && ai.sessionId) {
+    cAi.body.appendChild(el('div', 'panel-card-line', '会话：' + (ai.sessionTitle || '（未命名）')));
+    cAi.body.appendChild(el('div', 'panel-card-line', ai.sessionId));
+    cAi.body.appendChild(el('div', 'panel-card-line', '工作目录：' + (sc.territory || 'memory/' + id + '/')));
+  } else {
+    cAi.body.appendChild(el('div', 'panel-card-empty', '还没绑常驻会话 —— 去场景里建一条'));
+  }
+  var go = el('button', 'panel-btn', '打开对话');
+  go.addEventListener('click', function () { openScene(sc.id); });
+  cAi.body.appendChild(go);
+
+  return main;
 }
 
 function openScene(id) {

@@ -212,6 +212,34 @@ try {
     if (!wb.length) console.log('   ✗ 没找到 AI 面板的 iframe');
   }
 
+  // ④ 点左树里的另一个角色 ⇒ 右边的卡要跟着换
+  const swap = await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    if (!host) return 'no-shadow';
+    var leaves = host.shadowRoot.querySelectorAll('.side-leaf');
+    if (!leaves.length) return 'no-leaves';
+    var before = (host.shadowRoot.querySelector('.cat-main-name')||{}).textContent;
+    var target = null;
+    for (var i=0;i<leaves.length;i++){ if (!leaves[i].classList.contains('active')) { target = leaves[i]; break; } }
+    if (!target) return 'only-one';
+    var want = (target.querySelector('.side-leaf-name')||{}).textContent;
+    target.click();
+    return (before || '(空)') + ' → ' + (want || '(空)');
+  })()`);
+  console.log('④ 点树上另一个角色：' + swap);
+  await sleep(3000);
+  const after = await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    if (!host) return 'no-shadow';
+    var name = (host.shadowRoot.querySelector('.cat-main-name')||{}).textContent;
+    var cards = host.shadowRoot.querySelectorAll('.panel-card').length;
+    var active = host.shadowRoot.querySelectorAll('.side-leaf.active').length;
+    return name + ' | 卡片 ' + cards + ' 张 | 选中 ' + active + ' 个';
+  })()`);
+  console.log('   右边现在是：' + after);
+
   console.log('');
   console.log('── ③ 控制台报错 ──');
   if (!cdp.errors.length) console.log('   ✓ 没有报错');

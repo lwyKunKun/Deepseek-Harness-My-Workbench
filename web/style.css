@@ -760,164 +760,117 @@ body { overflow: hidden; }
   gap: var(--sp-3);
 }
 
-/* ── 卡片目录 ─────────────────────────────────────────────────── */
-.cat-bar { display: flex; gap: var(--sp-1); flex-wrap: wrap; flex: 0 0 auto; }
-.cat-btn {
-  border: 1px solid var(--border);
-  background: var(--bg-panel);
-  color: var(--text-dim);
-  font: inherit; font-size: var(--fs-sm);
-  padding: 4px 13px; border-radius: 999px; cursor: pointer;
+/* ── 场景页：左树 + 右卡（照视频里那版「场景-记忆机制」界面） ────── */
+.cat-layout {
+  display: flex; gap: var(--sp-4);
+  flex: 1 1 auto; min-height: 0;
 }
-.cat-btn:hover { color: var(--text); border-color: var(--accent); }
-.cat-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
 
-/* ── 目录头部：统计 + 看法切换 ─────────────────────────────────── */
-.cat-head {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: var(--sp-3); flex: 0 0 auto; margin-bottom: var(--sp-2);
-}
-.cat-title { font-size: var(--fs-sm); color: var(--text-dim); }
-.cat-toggle { display: flex; gap: var(--sp-1); }
-.cat-tbtn {
-  border: 1px solid var(--border);
+/* 左：场景树 */
+.cat-side {
+  flex: 0 0 232px; min-width: 0;
+  display: flex; flex-direction: column;
+  border: 1px solid var(--border); border-radius: var(--r-md);
   background: var(--bg-panel);
-  color: var(--text-dim);
-  font: inherit; font-size: var(--fs-sm);
-  padding: 3px 11px; border-radius: var(--r-sm); cursor: pointer;
-  transition: color var(--dur), border-color var(--dur), background var(--dur);
+  overflow: hidden;
 }
-.cat-tbtn:hover { color: var(--text); border-color: var(--accent); }
-.cat-tbtn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
-
-/* ── 树：分类是枝，角色是叶 ───────────────────────────────────── */
-.scene-tree {
-  /* 滚动交给 #view（整页一起滚），树自己不滚 ⇒ 不会出现双滚动条 */
+.cat-side-head {
   flex: 0 0 auto;
-  padding-right: var(--sp-2);
+  display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-3) var(--sp-2);
+  border-bottom: 1px solid var(--border);
 }
-.tree-node { margin-bottom: var(--sp-1); }
-.tree-head {
+.cat-side-title { font-size: var(--fs-md); font-weight: 600; }
+.cat-side-count { font-size: var(--fs-xs); color: var(--text-dim); white-space: nowrap; }
+
+.side-tree { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: var(--sp-2); }
+.side-branch { margin-bottom: 2px; }
+.side-branch-head {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: 4px var(--sp-2); border-radius: var(--r-sm);
+  cursor: pointer; user-select: none;
+}
+.side-branch-head:hover { background: var(--bg-panel-hover); }
+.side-twisty { width: 13px; flex: 0 0 auto; text-align: center; color: var(--text-dim); font-size: 11px; }
+.side-cat { font-size: var(--fs-sm); font-weight: 600; letter-spacing: .02em; }
+.side-count {
+  font-size: var(--fs-xs); color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; line-height: 15px;
+}
+.side-kids { margin-left: 8px; padding-left: var(--sp-2); border-left: 1px solid var(--border); }
+
+.side-leaf {
   display: flex; align-items: center; gap: var(--sp-2);
   padding: 5px var(--sp-2); border-radius: var(--r-sm);
-  cursor: pointer; user-select: none;
-  color: var(--text);
+  cursor: pointer; color: var(--text-dim);
+  transition: background var(--dur), color var(--dur);
 }
-.tree-head:hover { background: var(--bg-panel-hover); }
-.tree-twisty {
-  width: 14px; flex: 0 0 auto; text-align: center;
-  color: var(--text-dim); font-size: 11px;
-}
-.tree-cat { font-size: var(--fs-md); font-weight: 600; letter-spacing: .02em; }
-.tree-count {
-  font-size: var(--fs-xs); color: var(--text-dim);
-  border: 1px solid var(--border); border-radius: 999px;
-  padding: 0 7px; line-height: 16px;
-}
-.tree-kids {
-  margin-left: 13px;
-  padding-left: var(--sp-3);
-  border-left: 1px solid var(--border);
-}
-
-.tree-leaf {
-  display: flex; align-items: center; gap: var(--sp-3);
-  padding: var(--sp-2) var(--sp-3);
-  border-radius: var(--r-md);
-  cursor: pointer;
-  transition: background var(--dur);
-}
-.tree-leaf:hover { background: var(--bg-panel-hover); }
-.leaf-icon {
-  flex: 0 0 auto;
-  width: 32px; height: 32px; display: grid; place-items: center;
-  border-radius: var(--r-sm); background: var(--bg-soft);
-  font-size: 16px;
-}
-.leaf-main { flex: 1 1 auto; min-width: 0; }
-.leaf-top { display: flex; align-items: baseline; gap: var(--sp-2); }
-.leaf-name { font-size: var(--fs-md); font-weight: 600; }
-.leaf-duty {
-  font-size: var(--fs-xs); color: var(--text-dim);
-  margin-top: 1px;
+.side-leaf:hover { background: var(--bg-panel-hover); color: var(--text); }
+.side-leaf.active { background: var(--accent-soft); color: var(--text); }
+.side-dot { flex: 0 0 auto; font-size: 13px; width: 16px; text-align: center; }
+.side-leaf-name {
+  flex: 1 1 auto; min-width: 0; font-size: var(--fs-sm);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.leaf-tags { display: flex; gap: var(--sp-1); flex-wrap: wrap; margin-top: 5px; }
-.leaf-tag {
-  font-size: var(--fs-xs); color: var(--text-dim);
-  border: 1px solid var(--border); border-radius: 999px;
-  padding: 0 7px; line-height: 16px;
-}
-.leaf-side {
-  flex: 0 0 auto; display: flex; align-items: center; gap: var(--sp-2);
-}
-.leaf-stat { font-size: var(--fs-xs); color: var(--text-dim); white-space: nowrap; }
-
-.card-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: var(--sp-3);
-  align-content: start;
-}
-.scene-card {
-  background: var(--bg-panel);
-  border: var(--line-1);
-  border-radius: var(--r-md);
-  padding: var(--sp-4);
-  cursor: pointer;
-  display: flex; flex-direction: column; gap: var(--sp-2);
-  transition: border-color var(--dur), transform var(--dur), box-shadow var(--dur);
-  min-height: 168px;
-}
-.scene-card:hover {
-  border-color: rgba(79, 140, 255, .5);
-  transform: translateY(-2px);
-  box-shadow: var(--sh-2);
-}
-.scene-card-top { display: flex; align-items: center; gap: var(--sp-3); }
-.scene-icon {
-  width: 40px; height: 40px; flex: 0 0 auto;
+.side-del {
+  flex: 0 0 auto; width: 20px; height: 20px; padding: 0;
   display: grid; place-items: center;
-  border-radius: 11px;
-  background: linear-gradient(135deg, var(--accent-soft), rgba(123, 92, 255, .16));
-  border: 1px solid rgba(79, 140, 255, .3);
-  color: var(--accent);
-  font-size: 17px;
-}
-.scene-names { min-width: 0; }
-.scene-name { font-size: var(--fs-lg); font-weight: 600; }
-.scene-cat { font-size: var(--fs-xs); color: var(--text-dim); }
-.scene-duty {
-  font-size: var(--fs-sm); color: var(--text-dim); line-height: 1.65;
-  flex: 1 1 auto;
-  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
-}
-.scene-tags { display: flex; gap: 5px; flex-wrap: wrap; }
-.scene-tag {
-  font-size: var(--fs-xs); color: var(--accent);
-  background: var(--accent-soft); border-radius: 4px; padding: 1px 6px;
-}
-.scene-card-foot {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: var(--sp-2); margin-top: var(--sp-1);
-  padding-top: var(--sp-2); border-top: 1px solid var(--border);
-}
-.scene-stat { font-size: var(--fs-xs); color: var(--text-dim); }
-
-/* 卡片上的删除按钮：平时淡着，鼠标移上去才显眼 */
-.scene-del {
-  flex: 0 0 auto;
-  width: 26px; height: 26px; padding: 0;
-  display: grid; place-items: center;
-  border: 1px solid transparent; border-radius: var(--r-sm);
+  border: 1px solid transparent; border-radius: 4px;
   background: transparent; color: var(--text-dim);
-  font-size: 13px; line-height: 1; cursor: pointer;
-  transition: color var(--dur), background var(--dur), border-color var(--dur);
+  font-size: 11px; line-height: 1; cursor: pointer; opacity: 0;
+  transition: opacity var(--dur), color var(--dur), background var(--dur);
 }
-.scene-del:hover { color: var(--err); background: rgba(239, 93, 109, .12); border-color: rgba(239, 93, 109, .35); }
-.scene-del:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.side-leaf:hover .side-del { opacity: 1; }
+.side-del:hover { color: var(--err); background: rgba(239, 93, 109, .14); border-color: rgba(239, 93, 109, .35); }
+.side-del:focus-visible { opacity: 1; outline: 2px solid var(--accent); outline-offset: 1px; }
 
-/* 详情页的「删除场景」 */
+/* 右：选中角色的面板卡 */
+.cat-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: var(--sp-3); }
+.cat-main-head { display: flex; align-items: center; gap: var(--sp-3); flex: 0 0 auto; }
+.cat-main-icon {
+  flex: 0 0 auto; width: 36px; height: 36px; display: grid; place-items: center;
+  border-radius: var(--r-sm); background: var(--bg-soft); font-size: 17px;
+}
+.cat-main-names { flex: 1 1 auto; min-width: 0; }
+.cat-main-name { font-size: var(--fs-lg); font-weight: 600; }
+.cat-main-duty { font-size: var(--fs-sm); color: var(--text-dim); margin-top: 1px; }
+.cat-main-tags { display: flex; gap: 5px; flex-wrap: wrap; }
+.cat-main-tag {
+  font-size: var(--fs-xs); color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px;
+}
+
+.panel-card-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: var(--sp-3); align-content: start;
+}
+.panel-card {
+  display: flex; flex-direction: column;
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--bg-panel);
+  overflow: hidden;
+  transition: border-color var(--dur);
+}
+.panel-card:hover { border-color: var(--accent); }
+.panel-card-head {
+  display: flex; align-items: baseline; gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
+.panel-card-title { font-size: var(--fs-sm); font-weight: 600; }
+.panel-card-sub { font-size: var(--fs-xs); color: var(--text-dim); }
+.panel-card-body {
+  padding: var(--sp-3);
+  display: flex; flex-direction: column; gap: 3px;
+  min-height: 92px;
+}
+.panel-card-line {
+  font-size: var(--fs-xs); color: var(--text-dim); line-height: 1.65;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.panel-card-more { font-size: var(--fs-xs); color: var(--text-dim); opacity: .7; margin-top: 2px; }
+.panel-card-empty { font-size: var(--fs-xs); color: var(--text-dim); }
+
 .panel-btn.danger { color: var(--err); border-color: rgba(239, 93, 109, .4); margin-left: auto; }
 .panel-btn.danger:hover { color: #fff; background: var(--err); border-color: var(--err); }
 
