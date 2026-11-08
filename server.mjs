@@ -623,6 +623,79 @@ export async function handleRequest(req, res) {
       return;
     }
 
+    // ── 删除一个场景（角色） ───────────────────────────────────────
+    //    删的东西：场景配置 + 它的记忆目录 + 地盘表里的登记
+    //              + 它在待办板上自己的那些行 + 把它的常驻会话归档
+    //    不删的：台账/写痕/回执（那是历史，不是它的私产）
+    if (p === '/api/scenes/delete' && req.method === 'POST') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      const id = String(body.id || '').trim();
+      if (!id) { sendJson(res, 400, { ok: false, error: '要删哪个场景？' }); return; }
+      const file = path.join(PATHS.scenarios, id + '.json');
+      const raw = readJson(file);
+      if (!raw) { sendJson(res, 404, { ok: false, error: '没有这个场景：' + id }); return; }
+      const name = raw.name || id;
+
+      // 规则负责人不能删 —— 删了 A/C 档就没人能改了
+      const terr = authority.loadTerritory();
+      if (terr.ruleOwner === id || terr.ruleOwner === name) {
+        sendJson(res, 409, {
+          ok: false,
+          error: '「' + name + '」是规则负责人（' + terr.ruleOwner + '）—— 删了它，A/C 档（规矩与工具）就没人能改了。要删的话，先把 territory.json 里的 ruleOwner 改成别人。',
+        });
+        return;
+      }
+
+      const report = { ok: true, id, name, files: 0, todoRows: 0, sessions: [], warnings: [] };
+
+      // ① 待办板上归它自己的行（@归属 是它）—— 不删会变成指向空角色的死引用
+      const board = path.join(PATHS.memory, '_共享记忆', '_待办.md');
+      if (fs.existsSync(board)) {
+        const lines = fs.readFileSync(board, 'utf8').split('\n');
+        const kept = lines.filter((l) => {
+          const at = l.match(/@\s*(\S+)\s*$/);
+          if (!at) return true;
+          const owner = authority.resolveSceneId(at[1]);
+          return !(owner && owner === id);
+        });
+        const gone = lines.length - kept.length;
+        if (gone > 0) {
+          fs.writeFileSync(board, kept.join('\n'), 'utf8');
+          report.todoRows = gone;
+        }
+      }
+
+      // ② 它的常驻会话：归档（引擎没有删除接口 ⇒ 归档是最接近的「收起来」）
+      const sessions = (raw.panels || []).filter((x) => x.type === 'harness' && x.sessionId).map((x) => x.sessionId);
+      const cookie = cookieOf(req);
+      for (const sid of sessions) {
+        try {
+          const r = await rpc('workspace/archiveSession', { request: { sessionId: sid } }, cookie);
+          if (r.ok) report.sessions.push(sid);
+          else report.warnings.push('会话 ' + sid + ' 没归档成功（可以手动在 DSH 侧栏删）');
+        } catch (e) {
+          report.warnings.push('会话 ' + sid + ' 没归档成功（可以手动在 DSH 侧栏删）');
+        }
+      }
+
+      // ③ 记忆目录 + 场景配置
+      const memDir = path.join(PATHS.memory, id);
+      if (fs.existsSync(memDir)) {
+        const count = fs.readdirSync(memDir, { recursive: true }).filter((f) => {
+          try { return fs.statSync(path.join(memDir, f)).isFile(); } catch (e) { return false; }
+        }).length;
+        fs.rmSync(memDir, { recursive: true, force: true });
+        report.files = count;
+      }
+      fs.rmSync(file, { force: true });
+
+      // ④ 地盘表里摘掉它
+      authority.unregisterScene(id);
+
+      sendJson(res, 200, report);
+      return;
+    }
+
     // ── 仪表盘：五套机制的状态汇总 + 现在该做什么 ─────────────────
     if (p === '/api/dashboard') {
       let sessionIds = [];

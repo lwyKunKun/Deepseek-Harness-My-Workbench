@@ -823,6 +823,23 @@ body { overflow: hidden; }
 }
 .scene-stat { font-size: var(--fs-xs); color: var(--text-dim); }
 
+/* 卡片上的删除按钮：平时淡着，鼠标移上去才显眼 */
+.scene-del {
+  flex: 0 0 auto;
+  width: 26px; height: 26px; padding: 0;
+  display: grid; place-items: center;
+  border: 1px solid transparent; border-radius: var(--r-sm);
+  background: transparent; color: var(--text-dim);
+  font-size: 13px; line-height: 1; cursor: pointer;
+  transition: color var(--dur), background var(--dur), border-color var(--dur);
+}
+.scene-del:hover { color: var(--err); background: rgba(239, 93, 109, .12); border-color: rgba(239, 93, 109, .35); }
+.scene-del:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* 详情页的「删除场景」 */
+.panel-btn.danger { color: var(--err); border-color: rgba(239, 93, 109, .4); margin-left: auto; }
+.panel-btn.danger:hover { color: #fff; background: var(--err); border-color: var(--err); }
+
 /* ── 场景详情头 ───────────────────────────────────────────────── */
 .detail-head { display: flex; align-items: center; gap: var(--sp-3); flex: 0 0 auto; }
 .detail-icon {

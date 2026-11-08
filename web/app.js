@@ -162,10 +162,46 @@ function sceneCard(s) {
   var open = el('button', 'panel-btn solid', '打开');
   open.addEventListener('click', function (e) { e.stopPropagation(); openScene(s.id); });
   foot.appendChild(open);
+  var del = el('button', 'scene-del', '🗑');
+  del.title = '删除这个场景';
+  del.setAttribute('aria-label', '删除场景「' + s.name + '」');
+  del.addEventListener('click', function (e) { e.stopPropagation(); confirmDeleteScene(s); });
+  foot.appendChild(del);
   card.appendChild(foot);
 
   card.addEventListener('click', function () { openScene(s.id); });
   return card;
+}
+
+/* ── 删除场景：先看清楚要删什么，再让它删 ──────────────────────── */
+function confirmDeleteScene(s) {
+  var ai = (s.panels || []).filter(function (p) { return p.type === 'harness' && p.sessionId; });
+  wbDialog({
+    title: '删除场景「' + s.name + '」',
+    desc: '会删掉：'
+      + '\n· 场景配置（scenarios/' + s.id + '.json）'
+      + '\n· 它的全部记忆（memory/' + s.id + '/）'
+      + '\n· 地盘表里它的登记'
+      + (ai.length ? '\n· 它的常驻会话会**归档**（引擎没有删除接口 ⇒ 归档 = 从侧栏收起来，数据还在）' : '')
+      + '\n\n台账、写痕、回执这些**历史记录不会删**。删了就找不回来了。',
+    submitText: '确认删除',
+    fields: [],
+    onSubmit: function () {
+      return api('POST', '/api/scenes/delete', { id: s.id }).then(function (r) {
+        if (!r || !r.ok) throw new Error((r && r.error) || '删除失败');
+        var bits = [];
+        if (r.files) bits.push(r.files + ' 个记忆文件');
+        if (r.todoRows) bits.push(r.todoRows + ' 条待办');
+        if (r.sessions && r.sessions.length) bits.push(r.sessions.length + ' 条会话已归档');
+        if (r.warnings && r.warnings.length) bits.push(r.warnings.length + ' 条警告');
+        STATE.open = null;
+        return refreshScenes().then(function () {
+          wbToast('已删除「' + r.name + '」' + (bits.length ? '（' + bits.join('、') + '）' : ''));
+          return { ok: true };
+        });
+      });
+    },
+  });
 }
 
 function openScene(id) {
@@ -187,6 +223,10 @@ function renderSceneDetail(id) {
   nm.appendChild(el('div', 'detail-name', sc.name));
   nm.appendChild(el('div', 'detail-duty', sc.duty || sc.description || ''));
   head.appendChild(nm);
+  // 详情页也放一个删除入口（卡片上的那个太小，详情页是「认真操作」的地方）
+  var del = el('button', 'panel-btn danger', '删除场景');
+  del.addEventListener('click', function () { confirmDeleteScene(sc); });
+  head.appendChild(del);
   DOM.view.appendChild(head);
 
   // 固定面板组：身份卡 · 项目信息 · 索引 · 体检 · 会话
