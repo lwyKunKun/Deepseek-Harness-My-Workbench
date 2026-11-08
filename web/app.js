@@ -622,6 +622,11 @@ function renderDesk() {
     { id: 'desk-dispatch', title: '派单台', sub: '四件套 · 真唤醒 · 台账', type: 'dispatch', col: 1, row: 3, w: 1, h: 3 },
     { id: 'desk-triage', title: '分诊', sub: '唯一对口 · 三个出口', type: 'triage', col: 2, row: 3, w: 1, h: 3 },
     { id: 'desk-auth', title: '权限与写痕', sub: '五档 · 越界 · 撞车', type: 'authority', col: 3, row: 3, w: 1, h: 3 },
+    // ↓ 这三个原来挂在「运维」角色上（会话管理 / 文件 / 三类活分流）——
+    //   运维这个角色删掉了，工具不能跟着没 ⇒ 挪到工作台页自己身上。
+    { id: 'desk-sessions', title: '会话管理', sub: '新建 / 钉会话', type: 'sessions', col: 1, row: 6, w: 1, h: 3, bind: true },
+    { id: 'desk-files', title: '文件', sub: '工作台目录内', type: 'file', col: 2, row: 6, w: 1, h: 3, root: '.' },
+    { id: 'desk-gpu', title: '三类活分流', sub: '该不该上 GPU', type: 'gputriage', col: 3, row: 6, w: 1, h: 3 },
   ];
   layout.forEach(function (p, i) {
     p.scenario = 'dispatch';
