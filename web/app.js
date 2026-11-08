@@ -109,10 +109,68 @@ function render() {
   }
 }
 
-/* ── ① 场景页：卡片目录 ────────────────────────────────────────── */
+/* ── ① 场景页：目录（树 ⇄ 网格） ─────────────────────────────────
+ * 两种看法：
+ *   树（默认）：分类 → 角色，两层，收起状态记在本地
+ *   网格：原来的卡片目录（按分类筛选）
+ */
+var CAT_VIEW_KEY = 'wb.cat.view';
+var CAT_OPEN_KEY = 'wb.cat.open';
+
+function catalogView() {
+  try { return localStorage.getItem(CAT_VIEW_KEY) || 'tree'; } catch (e) { return 'tree'; }
+}
+function setCatalogView(v) {
+  try { localStorage.setItem(CAT_VIEW_KEY, v); } catch (e) { /* ignore */ }
+  render();
+}
+function openSet() {
+  try { return JSON.parse(localStorage.getItem(CAT_OPEN_KEY) || '{}') || {}; } catch (e) { return {}; }
+}
+function setOpen(cat, on) {
+  var s = openSet();
+  if (on) s[cat] = 1; else delete s[cat];
+  try { localStorage.setItem(CAT_OPEN_KEY, JSON.stringify(s)); } catch (e) { /* ignore */ }
+  render();
+}
+
+/** 场景按分类分组（顺序：分类名，按角色数少的排前面？—— 不，按名字排，稳定）。 */
+function groupByCategory() {
+  var map = {};
+  var order = [];
+  STATE.scenes.forEach(function (s) {
+    var c = s.category || '未分类';
+    if (!map[c]) { map[c] = { name: c, scenes: [] }; order.push(c); }
+    map[c].scenes.push(s);
+  });
+  order.sort();
+  return order.map(function (c) { return map[c]; });
+}
+
 function renderCatalog() {
-  var cats = ['全部'];
-  STATE.scenes.forEach(function (s) { if (cats.indexOf(s.category) < 0) cats.push(s.category); });
+  var groups = groupByCategory();
+
+  // 头部：左边统计，右边切换看法
+  var head = el('div', 'cat-head');
+  head.appendChild(el('div', 'cat-title', '角色（' + STATE.scenes.length + '）'));
+  var toggle = el('div', 'cat-toggle');
+  [['tree', '🌳 树'], ['grid', '▦ 网格']].forEach(function (pair) {
+    var b = el('button', 'cat-tbtn' + (catalogView() === pair[0] ? ' active' : ''), pair[1]);
+    b.title = pair[0] === 'tree' ? '按分类展开的树' : '卡片目录';
+    b.addEventListener('click', function (e) { e.stopPropagation(); setCatalogView(pair[0]); });
+    toggle.appendChild(b);
+  });
+  head.appendChild(toggle);
+  DOM.view.appendChild(head);
+
+  if (catalogView() === 'grid') { renderCardGrid(groups); return; }
+  renderTree(groups);
+}
+
+/** 网格看法：原来的卡片目录 + 分类筛选条。 */
+function renderCardGrid(groups) {
+  var cats = ['全部'].concat(groups.map(function (g) { return g.name; }));
+  if (cats.indexOf(STATE.category) < 0) STATE.category = '全部';
 
   var bar = el('div', 'cat-bar');
   cats.forEach(function (c) {
@@ -131,6 +189,71 @@ function renderCatalog() {
   }
   list.forEach(function (s) { grid.appendChild(sceneCard(s)); });
   DOM.view.appendChild(grid);
+}
+
+/** 树看法：分类是枝，角色是叶。 */
+function renderTree(groups) {
+  if (!groups.length) {
+    DOM.view.appendChild(el('div', 'todo-empty', '还没有角色 —— 去「注册」登记一个'));
+    return;
+  }
+  var tree = el('div', 'scene-tree');
+  var open = openSet();
+
+  groups.forEach(function (g) {
+    var isOpen = open[g.name] === undefined ? true : !!open[g.name];
+    var node = el('div', 'tree-node');
+    var head = el('div', 'tree-head');
+    head.appendChild(el('span', 'tree-twisty', isOpen ? '▾' : '▸'));
+    head.appendChild(el('span', 'tree-cat', g.name));
+    head.appendChild(el('span', 'tree-count', String(g.scenes.length)));
+    head.addEventListener('click', function () { setOpen(g.name, !isOpen); });
+    node.appendChild(head);
+
+    if (isOpen) {
+      var kids = el('div', 'tree-kids');
+      g.scenes.forEach(function (s) { kids.appendChild(sceneLeaf(s)); });
+      node.appendChild(kids);
+    }
+    tree.appendChild(node);
+  });
+  DOM.view.appendChild(tree);
+}
+
+/** 树上的一个叶子 = 一个角色。 */
+function sceneLeaf(s) {
+  var row = el('div', 'tree-leaf');
+  row.setAttribute('data-sc-id', s.id);
+
+  row.appendChild(el('div', 'leaf-icon', s.icon || '●'));
+
+  var main = el('div', 'leaf-main');
+  var top = el('div', 'leaf-top');
+  top.appendChild(el('span', 'leaf-name', s.name));
+  main.appendChild(top);
+  main.appendChild(el('div', 'leaf-duty', s.duty || s.description || ''));
+  if (s.skills && s.skills.length) {
+    var tags = el('div', 'leaf-tags');
+    s.skills.forEach(function (t) { tags.appendChild(el('span', 'leaf-tag', t)); });
+    main.appendChild(tags);
+  }
+  row.appendChild(main);
+
+  var side = el('div', 'leaf-side');
+  var ai = (s.panels || []).filter(function (p) { return p.type === 'harness'; });
+  side.appendChild(el('span', 'leaf-stat', (s.panels || []).length + ' 面板 · 会话 ' + ai.filter(function (p) { return p.sessionId; }).length + '/' + ai.length));
+  var open = el('button', 'panel-btn solid', '打开');
+  open.addEventListener('click', function (e) { e.stopPropagation(); openScene(s.id); });
+  side.appendChild(open);
+  var del = el('button', 'scene-del', '🗑');
+  del.title = '删除这个场景';
+  del.setAttribute('aria-label', '删除场景「' + s.name + '」');
+  del.addEventListener('click', function (e) { e.stopPropagation(); confirmDeleteScene(s); });
+  side.appendChild(del);
+  row.appendChild(side);
+
+  row.addEventListener('click', function () { openScene(s.id); });
+  return row;
 }
 
 function sceneCard(s) {
@@ -183,7 +306,8 @@ function confirmDeleteScene(s) {
       + '\n· 它的全部记忆（memory/' + s.id + '/）'
       + '\n· 地盘表里它的登记'
       + (ai.length ? '\n· 它的常驻会话会**归档**（引擎没有删除接口 ⇒ 归档 = 从侧栏收起来，数据还在）' : '')
-      + '\n\n台账、写痕、回执这些**历史记录不会删**。删了就找不回来了。',
+      + '\n\n记忆会**移到回收站**（data/trash/），拷回去就能还原。'
+      + '\n台账、写痕、回执这些**历史记录不会删**。',
     submitText: '确认删除',
     fields: [],
     onSubmit: function () {
@@ -194,6 +318,7 @@ function confirmDeleteScene(s) {
         if (r.todoRows) bits.push(r.todoRows + ' 条待办');
         if (r.sessions && r.sessions.length) bits.push(r.sessions.length + ' 条会话已归档');
         if (r.warnings && r.warnings.length) bits.push(r.warnings.length + ' 条警告');
+        if (r.trash) bits.push('已移到 ' + r.trash + '（可还原）');
         STATE.open = null;
         return refreshScenes().then(function () {
           wbToast('已删除「' + r.name + '」' + (bits.length ? '（' + bits.join('、') + '）' : ''));

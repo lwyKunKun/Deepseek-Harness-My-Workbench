@@ -678,16 +678,24 @@ export async function handleRequest(req, res) {
         }
       }
 
-      // ③ 记忆目录 + 场景配置
+      // ③ 记忆目录 + 场景配置 ⇒ **移到回收站**（不是真删）
+      //    删角色是有后果的动作（一个角色的记忆可能攒了很久）⇒ 给一条后悔路。
+      //    回收站在 data/trash/<id>-<时间戳>/，手动拷回去就能还原。
+      const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+      const trash = path.join(PATHS.data, 'trash', id + '-' + stamp);
+      fs.mkdirSync(path.join(trash, 'scenarios'), { recursive: true });
+      fs.mkdirSync(path.join(trash, 'memory'), { recursive: true });
+
       const memDir = path.join(PATHS.memory, id);
       if (fs.existsSync(memDir)) {
         const count = fs.readdirSync(memDir, { recursive: true }).filter((f) => {
           try { return fs.statSync(path.join(memDir, f)).isFile(); } catch (e) { return false; }
         }).length;
-        fs.rmSync(memDir, { recursive: true, force: true });
+        fs.renameSync(memDir, path.join(trash, 'memory', id));
         report.files = count;
       }
-      fs.rmSync(file, { force: true });
+      fs.renameSync(file, path.join(trash, 'scenarios', id + '.json'));
+      report.trash = path.relative(PATHS.root, trash);
 
       // ④ 地盘表里摘掉它
       authority.unregisterScene(id);

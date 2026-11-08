@@ -772,6 +772,87 @@ body { overflow: hidden; }
 .cat-btn:hover { color: var(--text); border-color: var(--accent); }
 .cat-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
 
+/* ── 目录头部：统计 + 看法切换 ─────────────────────────────────── */
+.cat-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--sp-3); flex: 0 0 auto; margin-bottom: var(--sp-2);
+}
+.cat-title { font-size: var(--fs-sm); color: var(--text-dim); }
+.cat-toggle { display: flex; gap: var(--sp-1); }
+.cat-tbtn {
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--text-dim);
+  font: inherit; font-size: var(--fs-sm);
+  padding: 3px 11px; border-radius: var(--r-sm); cursor: pointer;
+  transition: color var(--dur), border-color var(--dur), background var(--dur);
+}
+.cat-tbtn:hover { color: var(--text); border-color: var(--accent); }
+.cat-tbtn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
+
+/* ── 树：分类是枝，角色是叶 ───────────────────────────────────── */
+.scene-tree {
+  /* 滚动交给 #view（整页一起滚），树自己不滚 ⇒ 不会出现双滚动条 */
+  flex: 0 0 auto;
+  padding-right: var(--sp-2);
+}
+.tree-node { margin-bottom: var(--sp-1); }
+.tree-head {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: 5px var(--sp-2); border-radius: var(--r-sm);
+  cursor: pointer; user-select: none;
+  color: var(--text);
+}
+.tree-head:hover { background: var(--bg-panel-hover); }
+.tree-twisty {
+  width: 14px; flex: 0 0 auto; text-align: center;
+  color: var(--text-dim); font-size: 11px;
+}
+.tree-cat { font-size: var(--fs-md); font-weight: 600; letter-spacing: .02em; }
+.tree-count {
+  font-size: var(--fs-xs); color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 0 7px; line-height: 16px;
+}
+.tree-kids {
+  margin-left: 13px;
+  padding-left: var(--sp-3);
+  border-left: 1px solid var(--border);
+}
+
+.tree-leaf {
+  display: flex; align-items: center; gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition: background var(--dur);
+}
+.tree-leaf:hover { background: var(--bg-panel-hover); }
+.leaf-icon {
+  flex: 0 0 auto;
+  width: 32px; height: 32px; display: grid; place-items: center;
+  border-radius: var(--r-sm); background: var(--bg-soft);
+  font-size: 16px;
+}
+.leaf-main { flex: 1 1 auto; min-width: 0; }
+.leaf-top { display: flex; align-items: baseline; gap: var(--sp-2); }
+.leaf-name { font-size: var(--fs-md); font-weight: 600; }
+.leaf-duty {
+  font-size: var(--fs-xs); color: var(--text-dim);
+  margin-top: 1px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.leaf-tags { display: flex; gap: var(--sp-1); flex-wrap: wrap; margin-top: 5px; }
+.leaf-tag {
+  font-size: var(--fs-xs); color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 0 7px; line-height: 16px;
+}
+.leaf-side {
+  flex: 0 0 auto; display: flex; align-items: center; gap: var(--sp-2);
+}
+.leaf-stat { font-size: var(--fs-xs); color: var(--text-dim); white-space: nowrap; }
+
 .card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
