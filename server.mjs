@@ -32,6 +32,7 @@ import * as writelog from './lib/writelog.mjs';
 import * as dashboard from './lib/dashboard.mjs';
 import * as doctor from './lib/doctor.mjs';
 import * as writeapi from './lib/writeapi.mjs';
+import * as panelPorts from './lib/panelports.mjs';
 import { findWorkspace } from './lib/dsh-cli.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -439,9 +440,19 @@ function sceneSessions() {
   return sessions;
 }
 
-const server = http.createServer(async (req, res) => {
+/**
+ * 工作台的请求处理（界面 + API + 引擎代理）。
+ *
+ * 它**不自带监听**：被 DSH 插件装载时，由引擎的 webServer 转发过来（见 index.js）；
+ * 单独跑 `node server.mjs` 时才自己 listen。
+ */
+export async function handleRequest(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
   const p = url.pathname;
+
+  // 浏览器手上的引擎 cookie 是最新的（引擎重启过就会换）⇒ 先把它记下来。
+  // 后面的体检/派单等要直连引擎的接口就靠这份（存的 cookie 可能是旧的 ⇒ 401）。
+  cookieOf(req);
 
   try {
     // ── 引擎代理：AI 面板内嵌引擎界面 ─────────────────────────────
@@ -951,16 +962,7 @@ const server = http.createServer(async (req, res) => {
   } catch (err) {
     sendJson(res, 500, { ok: false, error: String(err && err.message || err) });
   }
-});
-
-server.on('upgrade', (req, socket, head) => {
-  const url = new URL(req.url, 'http://x');
-  if (url.pathname.startsWith('/engine/') || url.pathname.startsWith('/api/')) {
-    proxyUpgrade(req, socket, head);
-    return;
-  }
-  socket.destroy();
-});
+}
 
 ensureDirs();
 
@@ -969,7 +971,7 @@ ensureDirs();
  * 共用 origin ⇒ 两个面板互抢（实感：左右两个窗口变成同一条会话）。
  * 一板一端口 ⇒ 一板一 localStorage ⇒ 天然隔离。
  */
-const PANEL_PORTS = [];
+export const PANEL_PORTS = [];
 const panelServers = [];
 {
   const base = PANEL_PORT.base || (SERVER.port + 1);
@@ -981,40 +983,75 @@ const panelServers = [];
   }
 }
 
+let panelsWired = false;
+/**
+ * 面板端口逐个监听（失败的不影响主服务）。
+ * 独立运行时自动调用；被 DSH 插件装载时由插件调用。
+ * ⚠ 可以重复调用：端口没在听就再听一次（插件被停用/启用时要用）。
+ */
+export function startPanelServers() {
+  panelServers.forEach((ps, i) => {
+    if (!panelsWired) {
+      panelsWired = true;
+      // 面板端口的 WebSocket 也要代理（引擎的 /api/remote.mux 走这条）
+      ps.on('upgrade', (req, socket, head) => {
+        const u = new URL(req.url, 'http://x');
+        if (u.pathname === '/__wb/pin.js') { socket.destroy(); return; }
+        req.url = u.pathname + u.search;
+        proxyUpgrade(req, socket, head);
+      });
+      ps.on('error', (err) => {
+        console.warn('  ⚠ 面板端口 ' + PANEL_PORTS[i] + ' 起不来：' + err.message);
+      });
+    }
+    if (ps.listening) return;
+    ps.listen(PANEL_PORTS[i], SERVER.host);
+    // 记一笔：这些端口是我们自己的（体检要分清「被谁占」）
+    panelPorts.markOwned(PANEL_PORTS[i]);
+  });
+  return PANEL_PORTS.slice();
+}
+
 // 启动时把索引生成一份（AI 第一次开场就能看）
 try { writeIndexFile(buildIndexRows()); } catch (e) { /* ignore */ }
 
-server.listen(SERVER.port, SERVER.host, async () => {
-  const status = await probe();
-  const base = `http://${SERVER.host}:${SERVER.port}`;
-  console.log('');
-  console.log('  ┌─────────────────────────────────────────────┐');
-  console.log('  │  我的工作台                                  │');
-  console.log('  └─────────────────────────────────────────────┘');
-  console.log('  界面：   ' + base);
-  console.log('  引擎：   ' + ENGINE.base + (status.up ? '  ✓ 在跑' : '  ✗ 没连上'));
-  if (!status.up) {
-    console.log('');
-    console.log('  ⚠ 引擎没连上。先起引擎，再回来刷新本页。');
-    console.log('    dsh web --no-open --port 3080');
-  }
-  console.log('  面板端口：' + PANEL_PORTS.join(', ') + '（每个 AI 面板一个，独立 localStorage）');
-  console.log('');
-  console.log('  场景数： ' + loadScenes().length);
-  console.log('');
-});
+/* ── 独立运行（node server.mjs）：自己监听 ─────────────────────────
+ * 被 DSH 插件装载时**不**监听 —— 那一路走引擎自己的 webServer。
+ */
+const isMain = Boolean(process.argv[1])
+  && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
-// 面板端口逐个监听（失败的不影响主服务）
-panelServers.forEach((ps, i) => {
-  // 面板端口的 WebSocket 也要代理（引擎的 /api/remote.mux 走这条）
-  ps.on('upgrade', (req, socket, head) => {
-    const u = new URL(req.url, 'http://x');
-    if (u.pathname === '/__wb/pin.js') { socket.destroy(); return; }
-    req.url = u.pathname + u.search;
-    proxyUpgrade(req, socket, head);
+if (isMain) {
+  const server = http.createServer(handleRequest);
+
+  server.on('upgrade', (req, socket, head) => {
+    const url = new URL(req.url, 'http://x');
+    if (url.pathname.startsWith('/engine/') || url.pathname.startsWith('/api/')) {
+      proxyUpgrade(req, socket, head);
+      return;
+    }
+    socket.destroy();
   });
-  ps.on('error', (err) => {
-    console.warn('  ⚠ 面板端口 ' + PANEL_PORTS[i] + ' 起不来：' + err.message);
+
+  startPanelServers();
+
+  server.listen(SERVER.port, SERVER.host, async () => {
+    const status = await probe();
+    const base = `http://${SERVER.host}:${SERVER.port}`;
+    console.log('');
+    console.log('  ┌─────────────────────────────────────────────┐');
+    console.log('  │  我的工作台                                  │');
+    console.log('  └─────────────────────────────────────────────┘');
+    console.log('  界面：   ' + base);
+    console.log('  引擎：   ' + ENGINE.base + (status.up ? '  ✓ 在跑' : '  ✗ 没连上'));
+    if (!status.up) {
+      console.log('');
+      console.log('  ⚠ 引擎没连上。先起引擎，再回来刷新本页。');
+      console.log('    dsh web --no-open --port 3080');
+    }
+    console.log('  面板端口：' + PANEL_PORTS.join(', ') + '（每个 AI 面板一个，独立 localStorage）');
+    console.log('');
+    console.log('  场景数： ' + loadScenes().length);
+    console.log('');
   });
-  ps.listen(PANEL_PORTS[i], SERVER.host);
-});
+}

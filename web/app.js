@@ -42,6 +42,27 @@ window.__wbAllocPort = allocPort;
 window.__wbFreePort = freePort;
 
 /* ── 小工具 ────────────────────────────────────────────────────── */
+
+/**
+ * 工作台的「挂载点」。
+ *
+ * 两种跑法：
+ *   ① 独立页（node server.mjs）—— 挂到 document.body，API 前缀是 ''
+ *   ② 嵌在 DSH 界面里（插件）—— 挂到插件给的容器里，API 前缀是 '/workbench'
+ *
+ * WB_BASE 由装载方先设好（window.__WB_BASE），这里只读一次。
+ */
+var WB_BASE = (typeof window !== 'undefined' && window.__WB_BASE) || '';
+function wbUrl(p) { return WB_BASE + p; }
+function wbRoot() {
+  return (typeof window !== 'undefined' && window.__WB_ROOT_EL) || document.body;
+}
+/** 在挂载点里查元素（不是整个 document）—— 免得跟 DSH 界面自己的东西撞。 */
+function wbAll(sel) {
+  var root = wbRoot();
+  return root && root.querySelectorAll ? root.querySelectorAll(sel) : [];
+}
+
 function el(tag, cls, text) {
   var e = document.createElement(tag);
   if (cls) e.className = cls;
@@ -49,7 +70,7 @@ function el(tag, cls, text) {
   return e;
 }
 function api(method, url, body) {
-  return fetch(url, {
+  return fetch(wbUrl(url), {
     method: method,
     headers: body ? { 'content-type': 'application/json' } : undefined,
     body: body ? JSON.stringify(body) : undefined,
@@ -67,7 +88,7 @@ function setMode(mode) {
   cleanupPanels();
   STATE.mode = mode;
   STATE.open = null;
-  Array.prototype.forEach.call(document.querySelectorAll('#mainnav .navbtn'), function (b) {
+  Array.prototype.forEach.call(wbAll('#mainnav .navbtn'), function (b) {
     b.classList.toggle('active', b.getAttribute('data-mode') === mode);
   });
   render();
@@ -385,7 +406,7 @@ function collapsePanel(wrap) {
   }, 280);
 }
 function collapseAll() {
-  Array.prototype.forEach.call(document.querySelectorAll('.panel.expanded'), function (w) { collapsePanel(w); });
+  Array.prototype.forEach.call(wbAll('.panel.expanded'), function (w) { collapsePanel(w); });
 }
 
 /* ── 通用动作对话框 ───────────────────────────────────────────── */
@@ -463,7 +484,7 @@ function wbDialog(spec) {
   actions.appendChild(submit);
   card.appendChild(actions);
 
-  document.body.appendChild(overlay);
+  wbRoot().appendChild(overlay);
   overlay.addEventListener('click', function (e) { if (e.target === overlay) closeDialog(null); });
 
   var promise = new Promise(function (resolve) { DIALOG = { overlay: overlay, resolve: resolve }; });
@@ -493,7 +514,7 @@ window.wbDialog = wbDialog;
 function wbAction(spec) {
   if (!spec) return Promise.resolve(null);
   var call = function (url, body) {
-    return fetch(url, {
+    return fetch(wbUrl(url), {
       method: body ? 'POST' : 'GET',
       headers: body ? { 'content-type': 'application/json' } : undefined,
       body: body ? JSON.stringify(body) : undefined,
@@ -651,26 +672,98 @@ function refreshScenes() {
   });
 }
 
-function boot() {
-  DOM.view = document.getElementById('view');
-  DOM.dot = document.getElementById('status-dot');
-  DOM.status = document.getElementById('status-text');
+/** 顶栏的样子（独立页的 index.html 与插件挂载共用同一份，免得两处走样）。 */
+function wbShellHtml() {
+  return [
+    '<header id="topbar">',
+    '  <div class="brand"><span class="brand-mark">◈</span><span class="brand-name">我的工作台</span></div>',
+    '  <nav id="mainnav">',
+    '    <button class="navbtn active" data-mode="scenes">场景</button>',
+    '    <button class="navbtn" data-mode="registry">注册</button>',
+    '    <button class="navbtn" data-mode="desk">工作台</button>',
+    '  </nav>',
+    '  <div class="top-right"><span id="status-dot" class="status-dot"></span><span id="status-text">连接中…</span></div>',
+    '</header>',
+    '<main id="view"></main>',
+    '<div id="toast-host"></div>',
+  ].join('\n');
+}
 
-  Array.prototype.forEach.call(document.querySelectorAll('#mainnav .navbtn'), function (b) {
+/**
+ * 把工作台挂进一个容器。
+ *
+ * 独立页：mount(document.body)
+ * 插件：  mount(插件给的 div, { base: '/workbench' })
+ *
+ * 返回一个 dispose 函数（插件卸载时调）。
+ */
+function mountWorkbench(root, opts) {
+  opts = opts || {};
+  if (opts.base != null) WB_BASE = opts.base;
+  window.__WB_BASE = WB_BASE;
+
+  var prevRoot = window.__WB_ROOT_EL;
+  window.__WB_ROOT_EL = root;
+
+  // 壳：顶栏 + 视图区 + toast 容器
+  root.innerHTML = wbShellHtml();
+  // root 可能是 ShadowRoot（没有 classList）⇒ 样式挂在宿主元素上
+  var hostEl = (root && root.host) ? root.host : root;
+  if (hostEl && hostEl.classList) hostEl.classList.add('wb-host');
+
+  // 样式：嵌在 shadow root 里时由装载方交进来（innerHTML 赋值会清掉先前挂的东西，
+  // 所以样式必须在这里、赋值之后放）。
+  if (opts.css) {
+    var style = document.createElement('style');
+    style.textContent = opts.css;
+    root.insertBefore(style, root.firstChild);
+  }
+
+  DOM.view = root.querySelector('#view');
+  DOM.dot = root.querySelector('#status-dot');
+  DOM.status = root.querySelector('#status-text');
+
+  Array.prototype.forEach.call(root.querySelectorAll('#mainnav .navbtn'), function (b) {
     b.addEventListener('click', function () { setMode(b.getAttribute('data-mode')); });
   });
 
-  document.addEventListener('keydown', function (e) {
+  function onKey(e) {
     if (e.key === 'Escape') collapseAll();
-  });
+  }
+  document.addEventListener('keydown', onKey);
 
   refreshScenes();
-  setInterval(function () {
-    fetch('/api/engine/status').then(function (r) { return r.json(); }).then(function (r) {
+  var timer = setInterval(function () {
+    fetch(wbUrl('/api/engine/status')).then(function (r) { return r.json(); }).then(function (r) {
       if (r && r.engine) setEngineStatus(!!r.engine.up, r.engine.up ? '引擎已连' : '引擎未连');
     }).catch(function () { /* ignore */ });
   }, 5000);
+
+  return function dispose() {
+    clearInterval(timer);
+    document.removeEventListener('keydown', onKey);
+    cleanupPanels();
+    root.innerHTML = '';
+    window.__WB_ROOT_EL = prevRoot;
+  };
 }
 
-if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
-else boot();
+/**
+ * 对外接口：插件靠它把工作台挂进 DSH 界面的主区。
+ */
+window.WB = {
+  mount: mountWorkbench,
+  base: function () { return WB_BASE; },
+};
+
+/* 独立页：页面上已经有壳 ⇒ 直接挂。插件装载时这页没有 #view ⇒ 不自动启动。 */
+function bootStandalone() {
+  if (!document.getElementById('view')) return false;
+  mountWorkbench(document.body);
+  return true;
+}
+
+if (!window.__WB_MANUAL_BOOT) {
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bootStandalone);
+  else bootStandalone();
+}

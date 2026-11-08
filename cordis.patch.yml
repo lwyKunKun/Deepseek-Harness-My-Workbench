@@ -1,0 +1,8 @@
+- insert:
+    - id: workbench
+      name: '@local/workbench'
+      config:
+        # 工作台的代码与数据在哪（留空 = 自动找：$WB_ROOT → <当前目录>/workbench）
+        root: ''
+        # 挂在引擎的哪个路径下
+        mountPath: '/workbench'

@@ -20,15 +20,23 @@ function wbEl(tag, cls, text) {
   if (text != null) e.textContent = String(text);
   return e;
 }
+/**
+ * API 前缀：独立页是 ''，嵌在 DSH 界面里是 '/workbench'。
+ * 由 app.js 的 mountWorkbench 设进 window.__WB_BASE（这里只读）。
+ */
+function wbBase() {
+  return (typeof window !== 'undefined' && window.__WB_BASE) || '';
+}
 function wbApi(method, url, body) {
-  return fetch(url, {
+  return fetch(wbBase() + url, {
     method: method,
     headers: body ? { 'content-type': 'application/json' } : undefined,
     body: body ? JSON.stringify(body) : undefined,
   }).then(function (r) { return r.json(); });
 }
 function wbToast(text, bad) {
-  var host = document.getElementById('toast-host');
+  var scope = (typeof window !== 'undefined' && window.__WB_ROOT_EL) || document;
+  var host = scope.querySelector ? scope.querySelector('#toast-host') : null;
   if (!host) return;
   var t = wbEl('div', 'toast' + (bad ? ' bad' : ''), text);
   host.appendChild(t);

@@ -1,10 +1,31 @@
 {
-  "name": "my-workbench",
-  "version": "0.2.0",
+  "name": "@local/workbench",
+  "version": "1.0.0",
   "private": true,
-  "description": "我的定制工作台 —— 多场景 AI 工作台（场景 / 面板 / 会话绑定 / 派单闭环 / 权限分档 / 仪表盘）",
   "type": "module",
-  "main": "server.mjs",
+  "description": "我的定制工作台 —— 嵌在 DeepSeek Harness 界面里的多场景工作台（角色卡片目录 / 派单闭环 / 权限分档 / 体检）",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": ["@deepseek-ai/dsh-client-ui-sidebar", "@deepseek-ai/dsh-client-ui-layout"]
+    }
+  },
   "scripts": {
     "start": "node server.mjs"
   },

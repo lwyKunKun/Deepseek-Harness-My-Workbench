@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "My Workbench",
+    "description": "Embeds the workbench inside the Harness UI: pick \"Workbench\" on the left and the role catalog, dispatch desk, triage and permission panels show on the right. No separate service to run."
+  }
+}
