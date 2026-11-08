@@ -994,10 +994,18 @@ export function startPanelServers() {
     if (!panelsWired) {
       panelsWired = true;
       // 面板端口的 WebSocket 也要代理（引擎的 /api/remote.mux 走这条）
+      //
+      // ⚠⚠ 这里**必须**像 HTTP 那条路一样把 /engine 前缀摘掉：
+      //   面板里的引擎界面，它的 base 是 /engine/，所以 WebSocket 会连
+      //   /engine/api/remote.mux。引擎只认 /api/remote.mux ⇒ 不摘前缀就 404
+      //   ⇒ 客户端的实时通道连不上（控制台刷「connection lost, retry #N」）
+      //   ⇒ 它压根不去拉会话列表 ⇒ 面板里显示的是空白会话，不是我们钉的那条。
       ps.on('upgrade', (req, socket, head) => {
         const u = new URL(req.url, 'http://x');
         if (u.pathname === '/__wb/pin.js') { socket.destroy(); return; }
-        req.url = u.pathname + u.search;
+        let p = u.pathname;
+        if (p === '/engine' || p.startsWith('/engine/')) p = p.slice('/engine'.length) || '/';
+        req.url = p + u.search;
         proxyUpgrade(req, socket, head);
       });
       ps.on('error', (err) => {
@@ -1027,6 +1035,9 @@ if (isMain) {
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url, 'http://x');
     if (url.pathname.startsWith('/engine/') || url.pathname.startsWith('/api/')) {
+      // ⚠ 同样要摘掉 /engine 前缀（理由见面板端口那段注释）
+      const p = url.pathname.startsWith('/engine/') ? url.pathname.slice('/engine'.length) || '/' : url.pathname;
+      req.url = p + url.search;
       proxyUpgrade(req, socket, head);
       return;
     }
