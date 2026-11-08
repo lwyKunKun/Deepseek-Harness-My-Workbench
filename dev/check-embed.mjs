@@ -240,6 +240,40 @@ try {
   })()`);
   console.log('   右边现在是：' + after);
 
+  // 场景详情：看看「项目目录」面板
+  const openScene = await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    if (!host) return 'no-shadow';
+    var leaf = host.shadowRoot.querySelector('.side-leaf[data-sc-id="work"]');
+    if (!leaf) return 'no-leaf';
+    leaf.click();                       // 先选中（右边换成它的卡）
+    return 'ok';
+  })()`);
+  console.log('选中「工作」：' + openScene);
+  await sleep(2500);
+  // 再点「打开场景」进详情页
+  await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    if (!host) return 'no-shadow';
+    var btns = host.shadowRoot.querySelectorAll('.cat-main-head button');
+    for (var i=0;i<btns.length;i++){ if ((btns[i].textContent||'').indexOf('打开场景')>=0) { btns[i].click(); return 'ok'; } }
+    return 'no-btn';
+  })()`);
+  await sleep(4000);
+  const proj = await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    if (!host) return 'no-shadow';
+    var ids=[]; host.shadowRoot.querySelectorAll('[data-panel-id]').forEach(function(x){ids.push(x.getAttribute('data-panel-id'));});
+    var p = host.shadowRoot.querySelector('[data-panel-id="work-proj"]');
+    if (!p) return '没有这个面板；页面上的面板 = ' + ids.join(', ');
+    var b = p.querySelector('.panel-body');
+    return (b && b.innerText || '').replace(/\\s+/g,' ').slice(0,300);
+  })()`);
+  console.log('项目目录面板：' + proj);
+
   console.log('');
   console.log('── ③ 控制台报错 ──');
   if (!cdp.errors.length) console.log('   ✓ 没有报错');

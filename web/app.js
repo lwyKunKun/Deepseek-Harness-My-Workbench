@@ -309,6 +309,11 @@ function sideLeaf(s, active) {
   row.setAttribute('data-sc-id', s.id);
   row.appendChild(el('span', 'side-dot', s.icon || '●'));
   row.appendChild(el('span', 'side-leaf-name', s.name));
+  if (s.projectRoot) {
+    var mark = el('span', 'scene-proj', '📁');
+    mark.title = '项目目录：' + s.projectRoot;
+    row.appendChild(mark);
+  }
   var del = el('button', 'side-del', '🗑');
   del.title = '删除这个场景';
   del.setAttribute('aria-label', '删除场景「' + s.name + '」');
@@ -502,7 +507,7 @@ function renderSceneDetail(id) {
   head.appendChild(del);
   DOM.view.appendChild(head);
 
-  // 固定面板组：身份卡 · 项目信息 · 索引 · 体检 · 会话
+  // 固定面板组：身份卡 · 项目信息 · 索引 · 体检 · 项目目录 · 会话
   var layout = [
     { id: id + '-id', title: '身份卡', sub: '每场读的那张卡', type: 'identity', col: 1, row: 1, w: 1, h: 5 },
     { id: id + '-mem', title: '项目信息', sub: '§〇 开场先读', type: 'memory', col: 2, row: 1, w: 1, h: 5 },
@@ -516,11 +521,20 @@ function renderSceneDetail(id) {
     title: (ai && ai.title) || 'AI·' + sc.name,
     sub: '常驻会话',
     type: 'harness',
-    col: 4, row: 1, w: 1, h: 5,
+    col: 4, row: 1, w: 1, h: 3,
     expand: true,
     sessionId: (ai && ai.sessionId) || '',
     sessionTitle: (ai && ai.sessionTitle) || '',
     pinTarget: (ai && ai.pinTarget) || [sc.name],
+  });
+  // 项目目录：把真实磁盘上的文件夹挂到这个角色上（AI 在那儿写代码）
+  layout.push({
+    id: id + '-proj',
+    title: '项目目录',
+    sub: '真实磁盘 · AI 在这儿写代码',
+    type: 'project',
+    col: 4, row: 4, w: 1, h: 2,
+    scene: id,
   });
 
   var grid = el('div', 'panel-grid');

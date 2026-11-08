@@ -975,6 +975,114 @@ PANELS.authority = function (body, meta, head) {
   return function () { clearInterval(timer); };
 };
 
+/* ── 18. project：项目目录 ─────────────────────────────────────────
+ * 把**真实磁盘上的一个文件夹**挂到这个角色上：
+ *   · 绑了之后，这个角色的 AI 会话可以以它为工作目录（cwd）⇒ 让 AI 直接写代码
+ *   · 文件面板能浏览它
+ *   · 它登记成这个角色的地盘 ⇒ 别的角色碰它就是越界（E 档）
+ */
+PANELS.project = function (body, meta, head) {
+  var acts = wbHeadActs(head, meta.id);
+  var sceneId = meta.scene || (meta.scenario || '');
+  var wrap = wbEl('div', 'proj-box');
+  body.appendChild(wrap);
+
+  var headRow = wbEl('div', 'proj-row');
+  var cur = wbEl('div', 'proj-cur', '读取中…');
+  headRow.appendChild(cur);
+  wrap.appendChild(headRow);
+
+  var form = wbEl('div', 'proj-form');
+  var input = wbEl('input', 'proj-input');
+  input.placeholder = '项目目录（绝对路径，如 /Users/你/Projects/my-app）';
+  form.appendChild(input);
+  var bind = wbEl('button', 'chip solid', '绑定');
+  form.appendChild(bind);
+  var unbind = wbEl('button', 'chip', '解绑');
+  form.appendChild(unbind);
+  wrap.appendChild(form);
+
+  var acts2 = wbEl('div', 'proj-row');
+  var mkSession = wbEl('button', 'chip', '用这个目录开一条会话');
+  acts2.appendChild(mkSession);
+  var hint = wbEl('span', 'proj-hint', '');
+  acts2.appendChild(hint);
+  wrap.appendChild(acts2);
+
+  var list = wbEl('div', 'proj-list');
+  wrap.appendChild(list);
+
+  var root = '';
+
+  function load() {
+    wbApi('GET', '/api/scene/project?id=' + encodeURIComponent(sceneId)).then(function (r) {
+      if (!r || !r.ok) { cur.textContent = '读不到：' + (r && r.error || '未知'); return; }
+      root = r.projectRoot || '';
+      if (!root) {
+        cur.textContent = '还没绑项目目录';
+        cur.className = 'proj-cur off';
+        input.value = '';
+        list.innerHTML = '';
+        return;
+      }
+      cur.className = 'proj-cur';
+      cur.textContent = r.exists ? root : root + '（⚠ 目录不在了）';
+      input.value = root;
+      acts.diag.textContent = r.exists ? '已绑定' : '目录缺失';
+      if (r.exists) browse(root);
+    });
+  }
+
+  function browse(dir) {
+    wbApi('GET', '/api/fs/list?dir=' + encodeURIComponent(dir)).then(function (r) {
+      list.innerHTML = '';
+      if (!r || !r.ok) { list.appendChild(wbEl('div', 'todo-empty', '读不了：' + (r && r.error || '未知'))); return; }
+      acts.diag.textContent = r.rows.length + ' 项';
+      if (!r.rows.length) { list.appendChild(wbEl('div', 'todo-empty', '空目录')); return; }
+      r.rows.slice(0, 40).forEach(function (row) {
+        var line = wbEl('div', 'file-row' + (row.isDir ? ' dir' : ''));
+        line.appendChild(wbEl('span', 'file-name', row.name));
+        if (!row.isDir) line.appendChild(wbEl('span', 'file-size', row.size + ' B'));
+        line.addEventListener('click', function () { if (row.isDir) browse(row.path); });
+        list.appendChild(line);
+      });
+    });
+  }
+
+  bind.addEventListener('click', function () {
+    var v = input.value.trim();
+    if (!v) { wbToast('先填个目录', true); return; }
+    wbApi('POST', '/api/scene/project', { id: sceneId, root: v }).then(function (r) {
+      if (!r || !r.ok) { wbToast('绑不上：' + (r && r.error), true); return; }
+      wbToast('绑好了：' + r.projectRoot);
+      load();
+    }).catch(function (e) { wbToast('绑不上：' + (e && e.message || e), true); });
+  });
+
+  unbind.addEventListener('click', function () {
+    if (!root) return;
+    wbApi('POST', '/api/scene/project', { id: sceneId, root: '' }).then(function (r) {
+      if (!r || !r.ok) { wbToast('解不开：' + (r && r.error), true); return; }
+      wbToast('已解绑');
+      load();
+    });
+  });
+
+  mkSession.addEventListener('click', function () {
+    if (!root) { wbToast('先绑一个项目目录', true); return; }
+    var sc = (window.__WB_SCENES || []).filter(function (s) { return s.id === sceneId; })[0];
+    var title = (sc && sc.name ? sc.name : sceneId) + '·项目';
+    wbApi('POST', '/api/sessions/create', { scene: sceneId, title: title, cwd: root }).then(function (r) {
+      if (!r || !r.ok) { wbToast('开会话失败：' + (r && r.error), true); return; }
+      hint.textContent = '新会话已绑上（' + r.sessionId.slice(0, 20) + '…），工作目录 = ' + root;
+      wbToast('开好了，工作目录是项目目录');
+    }).catch(function (e) { wbToast('开会话失败：' + (e && e.message || e), true); });
+  });
+
+  load();
+  return function () { /* noop */ };
+};
+
 /* ── 14. dashboard：仪表盘（五套机制的状态 + 现在该做什么） ─────── */
 PANELS.dashboard = function (body, meta, head) {
   var acts = wbHeadActs(head, meta.id);

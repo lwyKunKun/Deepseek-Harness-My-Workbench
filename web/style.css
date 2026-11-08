@@ -976,3 +976,31 @@ body { overflow: hidden; }
 .health-row.bad { border-left-color: var(--err); }
 .health-name { font-size: var(--fs-xs); font-weight: 600; }
 .health-detail { font-size: var(--fs-xs); color: var(--text-dim); line-height: 1.5; }
+
+/* ── 项目目录面板：把真实磁盘的文件夹挂到角色上 ─────────────────── */
+.proj-box { display: flex; flex-direction: column; gap: var(--sp-2); height: 100%; }
+.proj-row { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.proj-cur {
+  font-size: var(--fs-xs); color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; min-width: 0;
+}
+.proj-cur.off { color: var(--text-dim); opacity: .7; }
+.proj-form { display: flex; gap: var(--sp-1); }
+.proj-input {
+  flex: 1 1 auto; min-width: 0;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg-soft); color: var(--text);
+  font: inherit; font-size: var(--fs-xs); padding: 4px 8px;
+}
+.proj-input:focus { outline: none; border-color: var(--accent); }
+.proj-hint { font-size: var(--fs-xs); color: var(--text-dim); }
+.proj-list {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg-soft);
+}
+.proj-list .file-row { padding: 3px var(--sp-2); }
+
+/* 卡片上「这个角色挂了项目目录」的标记 */
+.scene-name-row { display: flex; align-items: center; gap: var(--sp-2); }
+.scene-proj { font-size: 12px; opacity: .8; cursor: help; }

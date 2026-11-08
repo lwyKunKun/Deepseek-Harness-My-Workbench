@@ -191,20 +191,35 @@ async function serverToken() {
   return '';
 }
 
-/* ── 文件访问：只允许工作台目录与当前工作区（防目录穿越） ───────── */
-const FS_ROOTS = [path.resolve(PATHS.root), path.resolve(process.cwd())];
+/* ── 文件访问：工作台目录 + 当前工作区 + 各角色绑定的项目目录 ──────
+ * ⚠ 项目目录是**角色自己的地盘**（在真实磁盘上）。这里只是允许**浏览**；
+ *   能不能写，由权限判定（lib/authority.mjs）按「谁的地盘」说了算。
+ */
+function fsRoots() {
+  const roots = [path.resolve(PATHS.root), path.resolve(process.cwd())];
+  for (const r of authority.projectRoots()) {
+    if (!roots.includes(r)) roots.push(r);
+  }
+  return roots;
+}
 
 function fsAllowed(p) {
   try {
     const real = fs.realpathSync(p);
-    return FS_ROOTS.some((root) => real === root || real.startsWith(root + path.sep));
+    return fsRoots().some((root) => {
+      // ⚠ 根也要 realpath：macOS 上 /tmp 是 /private/tmp 的软链，
+      //   只对候选路径 realpath 的话两边对不上 ⇒ 明明在允许范围内却说不在。
+      let realRoot = root;
+      try { realRoot = fs.realpathSync(root); } catch (e) { /* 根不在了就按原样比 */ }
+      return real === realRoot || real.startsWith(realRoot + path.sep);
+    });
   } catch (e) {
     return false;
   }
 }
 
 function fsResolve(p) {
-  const abs = path.resolve(FS_ROOTS[0], p);
+  const abs = path.resolve(fsRoots()[0], p);
   if (!fsAllowed(abs)) return null;
   return abs;
 }
@@ -490,6 +505,59 @@ export async function handleRequest(req, res) {
       writeJson(file, raw);
       sendJson(res, 200, { ok: true, id, category: cat });
       return;
+    }
+
+    // ── 项目目录：把一个**真实磁盘上的文件夹**挂到这个角色上 ─────────
+    //    绑了之后：
+    //      · 这个角色的 AI 会话可以以它为工作目录（cwd）⇒ 让 AI 直接写代码
+    //      · 文件面板能浏览它
+    //      · 它登记成这个角色的地盘 ⇒ 别的角色碰它就是越界（E 档）
+    if (p === '/api/scene/project') {
+      if (req.method === 'GET') {
+        const id = String(url.searchParams.get('id') || '').trim();
+        const sc = getScene(id);
+        if (!sc) { sendJson(res, 404, { ok: false, error: '没有这个场景：' + id }); return; }
+        const root = sc.projectRoot || '';
+        let exists = false;
+        let isDir = false;
+        if (root) {
+          try { isDir = fs.statSync(root).isDirectory(); exists = isDir; } catch (e) { exists = false; }
+        }
+        sendJson(res, 200, { ok: true, id, projectRoot: root, exists, cwd: process.cwd() });
+        return;
+      }
+      if (req.method === 'POST') {
+        const body = JSON.parse((await readBody(req)) || '{}');
+        const id = String(body.id || '').trim();
+        const file = path.join(PATHS.scenarios, id + '.json');
+        const raw = readJson(file);
+        if (!raw) { sendJson(res, 404, { ok: false, error: '没有这个场景：' + id }); return; }
+
+        const want = String(body.root || '').trim();
+        if (!want) {
+          // 解绑
+          raw.projectRoot = '';
+          writeJson(file, raw);
+          authority.registerScene(id, { name: raw.name, duty: raw.duty, projectRoot: '' });
+          sendJson(res, 200, { ok: true, id, projectRoot: '' });
+          return;
+        }
+        const abs = path.resolve(want.replace(/^~(?=$|\/)/, process.env.HOME || '~'));
+        try {
+          if (!fs.statSync(abs).isDirectory()) {
+            sendJson(res, 400, { ok: false, error: '那不是一个目录：' + abs });
+            return;
+          }
+        } catch (e) {
+          sendJson(res, 400, { ok: false, error: '目录不存在：' + abs });
+          return;
+        }
+        raw.projectRoot = abs;
+        writeJson(file, raw);
+        const reg = authority.registerScene(id, { name: raw.name, duty: raw.duty, projectRoot: abs });
+        sendJson(res, 200, { ok: true, id, projectRoot: abs, territory: reg.ok });
+        return;
+      }
     }
 
     // ── 把一条真实会话钉到场景里的某个面板 ───────────────────────
