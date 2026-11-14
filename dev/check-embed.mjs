@@ -353,6 +353,15 @@ try {
   })()`);
   console.log('点开一本书：' + opened);
   await sleep(3500);
+  const readerState = await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    var p = host && host.shadowRoot.querySelector('[data-panel-id="reading-shelf"]');
+    var r = p && p.querySelector('.shelf-reader');
+    if (!r) return 'no-reader';
+    return { display: r.style.display, children: r.childNodes.length, listDisplay: p.querySelector('.shelf-list').style.display };
+  })()`);
+  console.log('点完之后 reader 状态：' + JSON.stringify(readerState));
   const reader = await cdp.eval(`(function(){
     var host=null;
     document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
@@ -394,13 +403,16 @@ try {
   })()`);
   console.log('对话框：' + JSON.stringify(dlgInfo));
   if (dlgInfo) {
+    // ⚠ 填**原来的页码**再确认 —— 测试不该真改机主的书。
+    //   测的是「点更新进度」这条路通不通，不是「能不能把页码写掉」。
+    var orig = String((dlgInfo.input || '0')).replace(/[^0-9]/g, '');
     await cdp.eval(`(function(){
       var host=null;
       document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
       var d = host && host.shadowRoot.querySelector('.dialog.open');
       if (!d) return;
       var inp = d.querySelector('.dialog-input');
-      if (inp) inp.value = '112';
+      if (inp) inp.value = '${orig}';
       var btns = d.querySelectorAll('.dialog-actions .chip');
       for (var i=0;i<btns.length;i++){ if ((btns[i].textContent||'').indexOf('更新')>=0) { btns[i].click(); return; } }
     })()`);
@@ -414,6 +426,64 @@ try {
     })()`);
     console.log('刷新后第一本书：' + note);
   }
+
+  // 书条目的 data-book 属性是什么
+  const bookPath = await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    var p = host && host.shadowRoot.querySelector('[data-panel-id="reading-shelf"]');
+    var books = p ? p.querySelectorAll('.shelf-book') : [];
+    var out=[];
+    for (var i=0;i<books.length && i<3;i++) out.push(books[i].getAttribute('data-book'));
+    return out;
+  })()`);
+  console.log('书条目的 data-book：' + JSON.stringify(bookPath));
+
+  // 抓 iframe 上下文的 console 报错（openBook 的 .then 里可能抛了）
+  const ctxErrs = await cdp.eval(`(function(){
+    return window.__wbErrors ? window.__wbErrors.join(' | ') : '(没装错误收集器)';
+  })()`);
+  console.log('页面里的报错：' + ctxErrs);
+
+  // 直接在浏览器里调一次接口，看通不通
+  const apiTest = await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    var p = host && host.shadowRoot.querySelector('[data-panel-id="reading-shelf"]');
+    var book = p && p.querySelector('.shelf-book');
+    if (!book) return 'no-book';
+    var path = book.getAttribute('data-book');
+    return fetch('/workbench/api/vault/note?scene=reading&path=' + encodeURIComponent(path), { credentials:'same-origin' })
+      .then(function(r){ return r.json().then(function(j){ return { status:r.status, ok:j.ok, err:j.error, body:(j.body||'').slice(0,60) }; }); })
+      .catch(function(e){ return { catch: String(e && e.message || e) }; });
+  })()`, true);
+  console.log('浏览器里直接调接口：' + JSON.stringify(apiTest));
+
+  // 读书视图的 DOM 结构
+  const mdDom = await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    var p = host && host.shadowRoot.querySelector('[data-panel-id="reading-shelf"]');
+    if (!p) return 'no-shelf';
+    var md = p.querySelector('.shelf-reader .md');
+    if (!md) {
+      var all=[]; p.querySelectorAll('.shelf-reader > *').forEach(function(n){ all.push(n.className); });
+      return 'no-md；reader 里的元素 = ' + all.join(', ');
+    }
+    var kids=[]; md.childNodes.forEach(function(n){ if(n.nodeType===1) kids.push(n.className + ':' + (n.textContent||'').slice(0,26)); });
+    return { childCount: md.childNodes.length, kids: kids.slice(0,8) };
+  })()`);
+  console.log('正文 DOM：' + JSON.stringify(mdDom, null, 1).replace(/\\n/g, ' '));
+
+  // 读书视图单独截一张
+  try {
+    await cdp.send('Page.captureScreenshot', { format: 'png' }).then((r) => {
+      const p = path.join(process.cwd(), 'data', 'reader.png');
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, Buffer.from(r.data, 'base64'));
+      console.log('读书视图截图：data/reader.png');
+    });
+  } catch (e) { /* ignore */ }
 
   console.log('');
   console.log('── ③ 控制台报错 ──');

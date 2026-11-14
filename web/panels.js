@@ -1315,7 +1315,10 @@ PANELS.bookshelf = function (body, meta, head) {
         upd.addEventListener('click', function () { askProgress(b); });
         reader.appendChild(upd);
 
-        var pre = wbEl('div', 'shelf-md', mdToText(r.body || ''));
+        // ⚠ mdToText 返回的是**元素**，不能塞进 wbEl 的第三个参数（那是文本）
+        //   —— 塞进去会打印成 [object HTMLDivElement]。
+        var pre = wbEl('div', 'shelf-md');
+        pre.appendChild(mdToText(r.body || ''));
         reader.appendChild(pre);
       });
   }
