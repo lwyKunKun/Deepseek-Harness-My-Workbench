@@ -1165,6 +1165,245 @@ PANELS.project = function (body, meta, head) {
   return function () { /* noop */ };
 };
 
+/* ── 19. bookshelf：书架（照 Obsidian 的 05-Bookshelf 搭） ──────────────
+ *
+ * 读的是**真实仓库**里的 md（frontmatter 里的 title/author/status/
+ * currentPage/totalPage/cover）⇒ 你的 Obsidian 和这里是同一份数据。
+ *
+ * 三组：在读 / 想读 / 已读完 —— 和 Obsidian 的 dataviewjs 仪表盘一样。
+ */
+PANELS.bookshelf = function (body, meta, head) {
+  var acts = wbHeadActs(head, meta.id);
+  var sceneId = meta.scene || meta.scenario || '';
+  var dir = meta.dir || '05-Bookshelf/书籍list';
+
+  var box = wbEl('div', 'shelf-box');
+  body.appendChild(box);
+
+  var top = wbEl('div', 'shelf-top');
+  var counts = wbEl('div', 'shelf-counts', '读取中…');
+  top.appendChild(counts);
+  var addBtn = wbEl('button', 'chip', '＋ 加一本');
+  top.appendChild(addBtn);
+  box.appendChild(top);
+
+  var list = wbEl('div', 'shelf-list');
+  box.appendChild(list);
+
+  var reader = wbEl('div', 'shelf-reader');
+  reader.style.display = 'none';
+  box.appendChild(reader);
+
+  var books = [];
+
+  /* ── 进度条（Obsidian 那份是 10 格方块） ── */
+  function bar(cur, total) {
+    if (!total || total <= 0) return null;
+    var pct = Math.round(Math.min(1, cur / total) * 100);
+    var n = Math.round(pct / 10);
+    return '🟩'.repeat(n) + '⬜'.repeat(10 - n) + '  ' + pct + '%';
+  }
+
+  function coverOf(b) {
+    if (!b.cover) return null;
+    if (/^https?:/.test(b.cover)) {
+      var img = wbEl('img', 'shelf-cover');
+      img.src = b.cover;
+      img.loading = 'lazy';
+      img.alt = b.title;
+      return img;
+    }
+    return null;   // 本地封面（_covers/）工作台读不到，先不画
+  }
+
+  function bookRow(b) {
+    var row = wbEl('div', 'shelf-book');
+    row.setAttribute('data-book', b.path);
+
+    var cov = coverOf(b);
+    if (cov) row.appendChild(cov);
+
+    var main = wbEl('div', 'shelf-book-main');
+    var t = wbEl('div', 'shelf-book-title', b.title);
+    main.appendChild(t);
+    var metaLine = wbEl('div', 'shelf-book-meta');
+    metaLine.textContent = [b.author || '—', (b.totalPage ? b.totalPage + ' 页' : null),
+      b.startDate || null, b.status].filter(Boolean).join(' · ');
+    main.appendChild(metaLine);
+
+    var pb = bar(b.currentPage, b.totalPage);
+    if (pb) {
+      var p = wbEl('div', 'shelf-book-prog', pb);
+      main.appendChild(p);
+      main.appendChild(wbEl('div', 'shelf-book-page', b.currentPage + ' / ' + (b.totalPage || '?') + ' 页'));
+    }
+    if (b.excerpt) main.appendChild(wbEl('div', 'shelf-book-excerpt', b.excerpt));
+
+    row.appendChild(main);
+
+    var side = wbEl('div', 'shelf-book-side');
+    var read = wbEl('button', 'chip', b.currentPage > 0 ? '继续' : '开始');
+    read.addEventListener('click', function (e) { e.stopPropagation(); openBook(b); });
+    side.appendChild(read);
+    var upd = wbEl('button', 'chip', '更新进度');
+    upd.addEventListener('click', function (e) { e.stopPropagation(); askProgress(b); });
+    side.appendChild(upd);
+    row.appendChild(side);
+
+    row.addEventListener('click', function () { openBook(b); });
+    return row;
+  }
+
+  function section(title, list2, cls) {
+    if (!list2 || !list2.length) return;
+    var h = wbEl('div', 'shelf-h' + (cls ? ' ' + cls : ''), title + '（' + list2.length + '）');
+    list.appendChild(h);
+    list2.forEach(function (b) { list.appendChild(bookRow(b)); });
+  }
+
+  function load() {
+    wbApi('GET', '/api/vault/books?scene=' + encodeURIComponent(sceneId) + '&dir=' + encodeURIComponent(dir))
+      .then(function (r) {
+        list.innerHTML = '';
+        if (!r || !r.ok) {
+          counts.textContent = '';
+          list.appendChild(wbEl('div', 'todo-empty', (r && r.error) || '读不到仓库'));
+          return;
+        }
+        books = [];
+        var c = r.counts;
+        counts.innerHTML = '';
+        [['📊 总计', c.total], ['📖 在读', c.reading], ['📋 想读', c.want], ['✅ 已读完', c.done]]
+          .forEach(function (pair) {
+            var chip = wbEl('span', 'shelf-chip', pair[0] + ' ' + pair[1]);
+            counts.appendChild(chip);
+          });
+        acts.diag.textContent = c.total + ' 本';
+        section('📖 在读', r.groups['在读'], 'reading');
+        section('📋 想读', r.groups['想读']);
+        section('✅ 已读完', r.groups['已读完'], 'done');
+        if (r.other && r.other.length) section('📦 其它状态', r.other);
+        if (!c.total) list.appendChild(wbEl('div', 'todo-empty', '这个目录还没有书 —— 点「＋ 加一本」'));
+      });
+  }
+
+  /* ── 打开一本书：读它的正文 ── */
+  function openBook(b) {
+    wbApi('GET', '/api/vault/note?scene=' + encodeURIComponent(sceneId) + '&path=' + encodeURIComponent(b.path))
+      .then(function (r) {
+        if (!r || !r.ok) { wbToast('读不到：' + (r && r.error), true); return; }
+        reader.innerHTML = '';
+        reader.style.display = '';
+        list.style.display = 'none';            // 读书视图接管
+        var head2 = wbEl('div', 'shelf-reader-head');
+        var back = wbEl('button', 'chip', '← 书架');
+        back.addEventListener('click', function () {
+          reader.style.display = 'none';
+          reader.innerHTML = '';
+          list.style.display = '';               // 回书架
+        });
+        head2.appendChild(back);
+        head2.appendChild(wbEl('div', 'shelf-reader-title', b.title));
+        reader.appendChild(head2);
+
+        var metaLine = wbEl('div', 'shelf-reader-meta',
+          [b.author || '—', (b.totalPage ? b.totalPage + ' 页' : null),
+            b.currentPage + ' / ' + (b.totalPage || '?') + ' 页', b.status].filter(Boolean).join(' · '));
+        reader.appendChild(metaLine);
+
+        var upd = wbEl('button', 'chip solid', '更新进度');
+        upd.addEventListener('click', function () { askProgress(b); });
+        reader.appendChild(upd);
+
+        var pre = wbEl('div', 'shelf-md', mdToText(r.body || ''));
+        reader.appendChild(pre);
+      });
+  }
+
+  /** 极简 markdown → 可读文本（标题/列表/引用/分隔线）。 */
+  function mdToText(md) {
+    var out = [];
+    String(md || '').split(/\r?\n/).forEach(function (line) {
+      var t = line.trim();
+      if (!t) { out.push({ gap: true }); return; }
+      if (t === '---') { out.push({ hr: true }); return; }
+      var h = t.match(/^(#{1,6})\s+(.*)$/);
+      if (h) { out.push({ h: h[2], lvl: h[1].length }); return; }
+      if (t.startsWith('> ')) { out.push({ q: t.slice(2) }); return; }
+      var li = t.match(/^[-*+]\s+(.*)$/);
+      if (li) { out.push({ li: li[1] }); return; }
+      out.push({ p: t });
+    });
+    var box2 = wbEl('div', 'md');
+    out.forEach(function (n) {
+      if (n.gap) { box2.appendChild(wbEl('div', 'md-gap')); return; }
+      if (n.hr) { box2.appendChild(wbEl('hr', 'md-hr')); return; }
+      if (n.h) { box2.appendChild(wbEl('div', 'md-h md-l' + (n.lvl || 1), n.h)); return; }
+      if (n.q) { box2.appendChild(wbEl('div', 'md-q', n.q)); return; }
+      if (n.li) { box2.appendChild(wbEl('div', 'md-li', '· ' + n.li)); return; }
+      box2.appendChild(wbEl('div', 'md-p', n.p));
+    });
+    return box2;
+  }
+
+  /* ── 更新进度 ── */
+  function askProgress(b) {
+    wbDialog({
+      title: '更新进度：' + b.title,
+      desc: '当前 ' + b.currentPage + ' / ' + (b.totalPage || '?') + ' 页。'
+        + '\n读到第几页了？（填满总页数 ⇒ 状态自动变「已读完」）',
+      submitText: '更新',
+      fields: [{
+        key: 'page', label: '当前页码', type: 'text',
+        value: String(b.currentPage || 0),
+      }],
+      onSubmit: function (v) {
+        var page = parseInt(String(v.page).replace(/[^\d]/g, ''), 10);
+        if (isNaN(page) || page < 0) throw new Error('页码不对');
+        return wbApi('POST', '/api/vault/progress?scene=' + encodeURIComponent(sceneId), {
+          path: b.path, currentPage: page,
+        }).then(function (r) {
+          if (!r || !r.ok) throw new Error((r && r.error) || '更新失败');
+          wbToast('进度更新了：' + page + ' 页');
+          load();
+          return { ok: true };
+        });
+      },
+    });
+  }
+
+  /* ── 加一本书 ── */
+  addBtn.addEventListener('click', function () {
+    wbDialog({
+      title: '加一本书',
+      desc: '会在「' + dir + '」里新建一个 md（格式跟 Obsidian 的书笔记一样：'
+        + 'title / author / totalPage / status / cover）。',
+      submitText: '加进去',
+      fields: [
+        { key: 'title', label: '书名', type: 'text' },
+        { key: 'author', label: '作者', type: 'text' },
+        { key: 'totalPage', label: '总页数', type: 'text' },
+        { key: 'cover', label: '封面链接（可留空）', type: 'text' },
+      ],
+      onSubmit: function (v) {
+        if (!v.title || !v.title.trim()) throw new Error('要书名');
+        return wbApi('POST', '/api/vault/book?scene=' + encodeURIComponent(sceneId), {
+          dir: dir, title: v.title.trim(), author: v.author || '',
+          totalPage: v.totalPage || 0, cover: v.cover || '', status: '想读',
+        }).then(function (r) {
+          if (!r || !r.ok) throw new Error((r && r.error) || '加不进去');
+          wbToast('加好了：' + r.path);
+          load();
+          return { ok: true };
+        });
+      },
+    });
+  });
+
+  load();
+  return function () { /* noop */ };
+};
+
 /* ── 14. dashboard：仪表盘（五套机制的状态 + 现在该做什么） ─────── */
 PANELS.dashboard = function (body, meta, head) {
   var acts = wbHeadActs(head, meta.id);

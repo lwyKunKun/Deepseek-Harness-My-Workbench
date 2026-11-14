@@ -301,6 +301,120 @@ try {
   })()`);
   console.log('上传结果：' + upNote);
 
+  // 书架面板：进「阅读」场景看
+  const shelf = await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    if (!host) return 'no-shadow';
+    // 先退出详情页（回目录），再在树上选阅读
+    var back = host.shadowRoot.querySelector('.detail-head button');
+    if (back) back.click();
+    var leaf = host.shadowRoot.querySelector('.side-leaf[data-sc-id="reading"]');
+    if (!leaf) { var ls=[]; host.shadowRoot.querySelectorAll('.side-leaf').forEach(function(x){ls.push(x.getAttribute('data-sc-id'));}); return 'no-leaf; 树上有: ' + ls.join(','); }
+    if (!leaf) return 'no-leaf';
+    leaf.click();
+    return 'ok';
+  })()`);
+  console.log('选中「阅读」：' + shelf);
+  await sleep(3500);
+  await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    if (!host) return;
+    var btns = host.shadowRoot.querySelectorAll('.cat-main-head button');
+    for (var i=0;i<btns.length;i++){ if ((btns[i].textContent||'').indexOf('打开场景')>=0) { btns[i].click(); return; } }
+  })()`);
+  await sleep(5000);
+  const shelfInfo = await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    if (!host) return 'no-shadow';
+    var p = host.shadowRoot.querySelector('[data-panel-id="reading-shelf"]');
+    if (!p) { var ids=[]; host.shadowRoot.querySelectorAll('[data-panel-id]').forEach(function(x){ids.push(x.getAttribute('data-panel-id'));}); return '没有书架面板；页面上的 = ' + ids.join(', '); }
+    var counts = p.querySelector('.shelf-counts');
+    var heads = p.querySelectorAll('.shelf-h');
+    var books = p.querySelectorAll('.shelf-book');
+    return { counts: counts ? counts.innerText.replace(/\\s+/g,' ') : '', groups: Array.prototype.map.call(heads, function(h){return h.textContent;}), books: books.length };
+  })()`);
+  console.log('书架面板：' + JSON.stringify(shelfInfo, null, 1).replace(/\\n/g, ' '));
+
+  // 点开一本书 ⇒ 读书视图
+  const opened = await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    if (!host) return 'no-shadow';
+    var p = host.shadowRoot.querySelector('[data-panel-id="reading-shelf"]');
+    if (!p) return 'no-shelf';
+    var book = p.querySelector('.shelf-book');
+    if (!book) return 'no-book';
+    var title = (book.querySelector('.shelf-book-title')||{}).textContent;
+    book.click();
+    return 'clicked: ' + title;
+  })()`);
+  console.log('点开一本书：' + opened);
+  await sleep(3500);
+  const reader = await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    var p = host && host.shadowRoot.querySelector('[data-panel-id="reading-shelf"]');
+    var r = p && p.querySelector('.shelf-reader');
+    if (!r) return '没有 .shelf-reader 容器';
+    if (r.style.display === 'none') return 'reader 的 display 是 none（没打开）';
+    return {
+      title: (r.querySelector('.shelf-reader-title')||{}).textContent,
+      meta: (r.querySelector('.shelf-reader-meta')||{}).textContent,
+      body: (r.querySelector('.md')||{}).innerText ? r.querySelector('.md').innerText.replace(/\\s+/g,' ').slice(0,120) : '(空)',
+    };
+  })()`);
+  console.log('读书视图：' + JSON.stringify(reader, null, 1).replace(/\\n/g, ' '));
+
+  // 更新进度：在界面上点「更新进度」→ 填页码 → 确认 ⇒ 真改 md
+  const upd = await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    if (!host) return 'no-shadow';
+    var p = host.shadowRoot.querySelector('[data-panel-id="reading-shelf"]');
+    if (!p) return 'no-shelf';
+    // 回书架（如果在读书视图里）
+    var back = p.querySelector('.shelf-reader-head button');
+    if (back) back.click();
+    var btns = p.querySelectorAll('.shelf-book-side .chip');
+    for (var i=0;i<btns.length;i++){ if ((btns[i].textContent||'').indexOf('更新进度')>=0) { btns[i].click(); return 'clicked'; } }
+    return 'no-button';
+  })()`);
+  console.log('点「更新进度」：' + upd);
+  await sleep(1500);
+  const dlgInfo = await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    var d = host && host.shadowRoot.querySelector('.dialog.open');
+    if (!d) return null;
+    return { title: (d.querySelector('h3')||{}).textContent, desc: (d.querySelector('.dialog-p')||{}).textContent,
+             input: (d.querySelector('.dialog-input')||{}).value };
+  })()`);
+  console.log('对话框：' + JSON.stringify(dlgInfo));
+  if (dlgInfo) {
+    await cdp.eval(`(function(){
+      var host=null;
+      document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+      var d = host && host.shadowRoot.querySelector('.dialog.open');
+      if (!d) return;
+      var inp = d.querySelector('.dialog-input');
+      if (inp) inp.value = '112';
+      var btns = d.querySelectorAll('.dialog-actions .chip');
+      for (var i=0;i<btns.length;i++){ if ((btns[i].textContent||'').indexOf('更新')>=0) { btns[i].click(); return; } }
+    })()`);
+    await sleep(3500);
+    const note = await cdp.eval(`(function(){
+      var host=null;
+      document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+      var p = host && host.shadowRoot.querySelector('[data-panel-id="reading-shelf"]');
+      var first = p && p.querySelector('.shelf-book');
+      return first ? ((first.querySelector('.shelf-book-title')||{}).textContent + ' → ' + ((first.querySelector('.shelf-book-page')||{}).textContent||'')) : '(没有书)';
+    })()`);
+    console.log('刷新后第一本书：' + note);
+  }
+
   console.log('');
   console.log('── ③ 控制台报错 ──');
   if (!cdp.errors.length) console.log('   ✓ 没有报错');

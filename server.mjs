@@ -33,6 +33,7 @@ import * as dashboard from './lib/dashboard.mjs';
 import * as doctor from './lib/doctor.mjs';
 import * as writeapi from './lib/writeapi.mjs';
 import * as panelPorts from './lib/panelports.mjs';
+import * as vault from './lib/vault.mjs';
 import { findWorkspace } from './lib/dsh-cli.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -519,6 +520,110 @@ export async function handleRequest(req, res) {
       raw.category = cat;
       writeJson(file, raw);
       sendJson(res, 200, { ok: true, id, category: cat });
+      return;
+    }
+
+    // ── Obsidian 仓库：读你的真实笔记 ──────────────────────────────
+    //    角色绑了项目目录 ⇒ 那个目录就是仓库根（Obsidian 库）。
+    if (p.startsWith('/api/vault/')) {
+      const action = p.slice('/api/vault/'.length);
+      const scene = String(url.searchParams.get('scene') || '').trim();
+      const sc = getScene(scene);
+      if (!sc) { sendJson(res, 404, { ok: false, error: '没有这个场景：' + scene }); return; }
+      const root = String(sc.projectRoot || '').trim();
+      if (!root) {
+        sendJson(res, 400, { ok: false, error: '「' + sc.name + '」还没绑仓库目录 —— 先在「项目目录」面板里绑定 Obsidian 库 的路径' });
+        return;
+      }
+      if (!fs.existsSync(root)) {
+        sendJson(res, 400, { ok: false, error: '仓库目录不存在：' + root });
+        return;
+      }
+
+      // 书架：列出所有 md（按 status 分组）
+      if (action === 'books') {
+        const sub = String(url.searchParams.get('dir') || '').trim();
+        const r = vault.readBooks(root, sub);
+        if (!r.ok) { sendJson(res, 400, { ok: false, error: r.error }); return; }
+        const groups = { 在读: [], 想读: [], 已读完: [] };
+        const other = [];
+        for (const b of r.books) {
+          if (groups[b.status]) groups[b.status].push(b);
+          else other.push(b);
+        }
+        sendJson(res, 200, {
+          ok: true, root, dir: sub,
+          groups,
+          other,
+          counts: {
+            total: r.books.length,
+            reading: groups['在读'].length,
+            want: groups['想读'].length,
+            done: groups['已读完'].length,
+          },
+        });
+        return;
+      }
+
+      // 读一篇笔记（正文 + frontmatter）
+      if (action === 'note') {
+        const rel = String(url.searchParams.get('path') || '').trim();
+        const r = vault.readNote(root, rel);
+        if (!r.ok) { sendJson(res, 404, { ok: false, error: r.error }); return; }
+        sendJson(res, 200, { ok: true, root, path: rel, fm: r.fm, body: r.body });
+        return;
+      }
+
+      // 更新阅读进度（照 Obsidian 的字段：currentPage / status / endDate）
+      if (action === 'progress' && req.method === 'POST') {
+        const body = JSON.parse((await readBody(req)) || '{}');
+        const rel = String(body.path || '').trim();
+        const page = Number(body.currentPage);
+        const note = vault.readNote(root, rel);
+        if (!note.ok) { sendJson(res, 404, { ok: false, error: note.error }); return; }
+        const total = Number(note.fm.totalPage) || 0;
+        if (!Number.isFinite(page) || page < 0 || (total > 0 && page > total)) {
+          sendJson(res, 400, { ok: false, error: '页码不对（0 ~ ' + (total || '?') + '）' });
+          return;
+        }
+        const today = new Date().toISOString().slice(0, 10);
+        const oldStatus = String(note.fm.status || '想读');
+        vault.writeFrontmatterField(root, rel, 'currentPage', page);
+        if (total > 0 && page >= total) {
+          vault.writeFrontmatterField(root, rel, 'status', '已读完');
+          vault.writeFrontmatterField(root, rel, 'endDate', today);
+        } else {
+          if (oldStatus === '已读完') {
+            vault.writeFrontmatterField(root, rel, 'status', page > 0 ? '在读' : '想读');
+            vault.writeFrontmatterField(root, rel, 'endDate', '');
+          } else if (oldStatus === '想读' && page > 0) {
+            vault.writeFrontmatterField(root, rel, 'status', '在读');
+          }
+        }
+        sendJson(res, 200, { ok: true, path: rel, currentPage: page, totalPage: total });
+        return;
+      }
+
+      // 加一本书（按 Obsidian 的书笔记格式新建 md）
+      if (action === 'book' && req.method === 'POST') {
+        const body = JSON.parse((await readBody(req)) || '{}');
+        const title = String(body.title || '').trim();
+        if (!title) { sendJson(res, 400, { ok: false, error: '要书名' }); return; }
+        const dir = String(body.dir || '书籍list').trim();
+        const rel = dir + '/' + title.replace(/[/\\]/g, '-') + '.md';
+        const r = vault.createBookNote(root, rel, {
+          title,
+          author: body.author,
+          totalPage: body.totalPage,
+          status: body.status,
+          cover: body.cover,
+        });
+        if (!r.ok) { sendJson(res, 400, { ok: false, error: r.error }); return; }
+        sendJson(res, 200, { ok: true, path: rel });
+        return;
+      }
+
+      sendJson(res, 404, { ok: false, error: '没有这个仓库接口：' + action });
       return;
     }
 

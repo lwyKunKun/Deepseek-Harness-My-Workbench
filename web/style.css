@@ -1021,3 +1021,67 @@ body { overflow: hidden; }
 .up-drop.over { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
 .up-note { font-size: var(--fs-xs); color: var(--text-dim); min-height: 14px; }
 .up-note.bad { color: var(--err); }
+
+/* ── 书架（照 Obsidian 的 05-Bookshelf） ─────────────────────────── */
+.shelf-box { display: flex; flex-direction: column; gap: var(--sp-2); height: 100%; }
+.shelf-top { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); }
+.shelf-counts { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
+.shelf-chip {
+  font-size: var(--fs-xs); color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px;
+}
+.shelf-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: var(--sp-2); }
+
+.shelf-h {
+  font-size: var(--fs-sm); font-weight: 600; margin: var(--sp-3) 0 var(--sp-1);
+  padding-bottom: 3px; border-bottom: 1px solid var(--border);
+}
+.shelf-h:first-child { margin-top: 0; }
+.shelf-h.reading { color: var(--accent); }
+.shelf-h.done { color: var(--ok); }
+
+.shelf-book {
+  display: flex; gap: var(--sp-3); align-items: flex-start;
+  padding: var(--sp-2); border-radius: var(--r-md);
+  cursor: pointer; transition: background var(--dur);
+}
+.shelf-book:hover { background: var(--bg-panel-hover); }
+.shelf-cover {
+  flex: 0 0 auto; width: 44px; height: 60px; object-fit: cover;
+  border-radius: 4px; border: 1px solid var(--border); background: var(--bg-soft);
+}
+.shelf-book-main { flex: 1 1 auto; min-width: 0; }
+.shelf-book-title { font-size: var(--fs-md); font-weight: 600; }
+.shelf-book-meta { font-size: var(--fs-xs); color: var(--text-dim); margin-top: 2px; }
+.shelf-book-prog { font-size: var(--fs-xs); margin-top: 4px; letter-spacing: 1px; }
+.shelf-book-page { font-size: var(--fs-xs); color: var(--text-dim); }
+.shelf-book-excerpt {
+  font-size: var(--fs-xs); color: var(--text-dim); opacity: .8; margin-top: 3px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.shelf-book-side { flex: 0 0 auto; display: flex; flex-direction: column; gap: 4px; }
+
+/* 读书视图（打开一本书时，替换书架列表 —— 不用绝对定位：
+   面板体没有定位上下文，绝对定位会跑到别处去） */
+.shelf-reader {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  border-top: 1px solid var(--border);
+  padding-top: var(--sp-2); margin-top: var(--sp-2);
+}
+.shelf-reader-head { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-2); }
+.shelf-reader-title { font-size: var(--fs-lg); font-weight: 600; }
+.shelf-reader-meta { font-size: var(--fs-xs); color: var(--text-dim); margin-bottom: var(--sp-2); }
+
+/* 极简 markdown 渲染 */
+.md { margin-top: var(--sp-3); font-size: var(--fs-sm); line-height: 1.75; }
+.md-h { font-weight: 600; margin: var(--sp-3) 0 var(--sp-1); }
+.md-l1 { font-size: var(--fs-lg); }
+.md-l2 { font-size: var(--fs-md); }
+.md-p { color: var(--text); }
+.md-q {
+  color: var(--text-dim); border-left: 2px solid var(--border);
+  padding-left: var(--sp-3); margin: var(--sp-2) 0;
+}
+.md-li { color: var(--text); padding-left: var(--sp-3); }
+.md-gap { height: var(--sp-2); }
+.md-hr { border: none; border-top: 1px solid var(--border); margin: var(--sp-3) 0; }

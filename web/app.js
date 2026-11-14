@@ -536,6 +536,19 @@ function renderSceneDetail(id) {
     col: 4, row: 4, w: 1, h: 2,
     scene: id,
   });
+  // 书架：角色的仓库目录若是 Obsidian 库 ⇒ 挂「书架」面板（读真实 md）
+  var sc2 = STATE.scenes.filter(function (x) { return x.id === id; })[0];
+  if (sc2 && sc2.projectRoot) {
+    layout.push({
+      id: id + '-shelf',
+      title: '书架',
+      sub: 'Obsidian 书库',
+      type: 'bookshelf',
+      col: 1, row: 6, w: 3, h: 5,
+      scene: id,
+      dir: '05-Bookshelf/书籍list',
+    });
+  }
 
   var grid = el('div', 'panel-grid');
   grid.style.gridTemplateColumns = 'repeat(4, 1fr)';
