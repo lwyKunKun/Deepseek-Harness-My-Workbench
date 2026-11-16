@@ -1,16 +1,15 @@
 #!/usr/bin/env node
-// check-drag-rules.mjs —— 验拖拽的层级规则
+// check-drag-rules.mjs —— 验拖拽的层级规则（机主定的规矩）
 //
-// ⛔ 机主定的规矩：
-//   · 一级菜单（分类）拖 ⇒ **只能换位置**，永远是枝，不会变成别人的二级菜单
-//   · 二级菜单（角色）拖 ⇒ 随意（落分类上 = 加入；落角色上 = 换顺序）
+//   · 一级菜单（分类）拖 ⇒ **只能换位置**：永远是枝，成员的归属一个都不改
+//   · 二级菜单（角色）拖 ⇒ 随意：
+//       拖到分类标题的**上半区** ⇒ 排到那个分类前面（只换顺序，不改归属）
+//       拖到分类标题的**下半区** ⇒ 加入那个分类（改归属）
+//       拖到角色上/下 ⇒ 换顺序
 //
-// 验三件事：
-//   ① 拖分类到另一个分类上 ⇒ 分类换位置，**成员归属不变**
-//   ② 拖分类 ⇒ 它还是一级菜单（还在分类行里，不是别人的子项）
-//   ③ 拖角色到分类上 ⇒ 角色换分类（这才是「二级可以随意」）
+// 四个用例都跑一遍，最后把数据恢复原样。
 //
-// 用法：node dev/check-drag-rules.mjs [--cdp 9420]
+// 用法：node dev/check-drag-rules.mjs [--cdp 9440]
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -20,7 +19,7 @@ import path from 'node:path';
 const argv = process.argv.slice(2);
 const val = (k, d) => { const i = argv.indexOf(k); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
 const URL_ = 'http://127.0.0.1:3080/';
-const PORT = Number(val('--cdp', 9420));
+const PORT = Number(val('--cdp', 9440));
 
 const CHROME = [
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -29,7 +28,7 @@ const CHROME = [
 ].find((p) => fs.existsSync(p));
 if (!CHROME) { console.error('找不到 Chrome'); process.exit(2); }
 
-const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-drag-'));
+const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-rules-'));
 const chrome = spawn(CHROME, ['--headless=new', '--disable-gpu', '--no-sandbox', '--no-first-run',
   '--disable-extensions', '--disable-background-networking', '--renderer-process-limit=2',
   '--js-flags=--max-old-space-size=512', '--remote-debugging-port=' + PORT,
@@ -40,15 +39,14 @@ const cookie = () => { try { return JSON.parse(fs.readFileSync('data/engine-cook
 const api = async (m, u, b) => {
   const r = await fetch('http://127.0.0.1:3080/workbench' + u, {
     method: m, headers: { ...(b ? { 'content-type': 'application/json' } : {}), cookie: cookie() },
-    body: b ? JSON.stringify(b) : undefined,
-  });
+    body: b ? JSON.stringify(b) : undefined });
   return r.json();
 };
 
 class CDP {
   constructor(ws) { this.ws = ws; this.id = 0; this.pending = new Map(); this.errors = [];
     ws.addEventListener('message', (ev) => { const m = JSON.parse(ev.data);
-      if (m.method === 'Runtime.exceptionThrown') this.errors.push(m.params.exceptionDetails?.exception?.description || '');
+      if (m.method === 'Runtime.exceptionThrown') this.errors.push(m.params.exceptionDetails?.exception?.description || m.params.exceptionDetails?.text || '');
       if (m.id && this.pending.has(m.id)) { const { resolve, reject } = this.pending.get(m.id); this.pending.delete(m.id); if (m.error) reject(new Error(m.error.message)); else resolve(m.result); } }); }
   send(method, params = {}) { const id = ++this.id; return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); this.ws.send(JSON.stringify({ id, method, params })); setTimeout(() => { if (this.pending.has(id)) { this.pending.delete(id); reject(new Error('超时 ' + method)); } }, 30000); }); }
   async eval(expression) { const r = await this.send('Runtime.evaluate', { expression, returnByValue: true }); if (r.exceptionDetails) throw new Error(r.exceptionDetails.text); return r.result.value; }
@@ -56,25 +54,55 @@ class CDP {
 
 const HOST = `(function(){ var h=null; document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) h=el; }); return h; })()`;
 
-/** 从界面上读出「树长什么样」：每个分类 + 它下面有哪些角色。 */
-const READ_TREE = `(function(){
-  var host=${HOST};
-  if (!host) return null;
-  var out=[];
+/** 界面的树：分类 → 它的角色 */
+const TREE = `(function(){
+  var host=${HOST}; if(!host) return null; var out=[];
   host.shadowRoot.querySelectorAll('.side-branch').forEach(function(br){
-    var cat = (br.querySelector('.side-cat')||{}).textContent;
-    var kids=[];
-    br.querySelectorAll('.side-leaf').forEach(function(lf){ kids.push(lf.getAttribute('data-sc-id')); });
-    out.push(cat + ':' + kids.join(','));
+    out.push((br.querySelector('.side-cat')||{}).textContent + ':' + Array.prototype.map.call(br.querySelectorAll('.side-leaf'), function(l){ return l.getAttribute('data-sc-id'); }).join(','));
   });
   return out;
 })()`;
+
+/** 服务端的分类字段 */
+async function serverCats() {
+  const r = await api('GET', '/api/scenes');
+  return (r.scenes || []).map((x) => x.name + '(' + x.category + ')').join(' ');
+}
+const catsOf = (tree, cat) => { const row = (tree || []).find((x) => x.startsWith(cat + ':')); return row ? row.split(':')[1] : ''; };
+
+/** 拖一下（kind: 'cat' 拖分类；'leaf' 拖角色；half: 'upper'|'lower'） */
+async function drag(srcCat, dstCat, kind, half, srcLeaf) {
+  const leafSel = ".side-leaf[data-sc-id=\"" + srcLeaf + "\"]";
+  return cdp.eval(`(function(){
+    var host=${HOST};
+    var src=null, dst=null;
+    host.shadowRoot.querySelectorAll('.side-branch').forEach(function(br){
+      var c=(br.querySelector('.side-cat')||{}).textContent;
+      if (c === '${srcCat}') src = br.querySelector('${kind === 'cat' ? ".side-branch-head" : leafSel}');
+      if (c === '${dstCat}') dst = br.querySelector('.side-branch-head');
+    });
+    if (!src || !dst) return 'no-node';
+    var dt = new DataTransfer();
+    var r = dst.getBoundingClientRect();
+    var y = ${half === 'lower' ? 'r.top + r.height - 2' : 'r.top + 2'};
+    src.dispatchEvent(new DragEvent('dragstart', { bubbles:true, cancelable:true, dataTransfer: dt }));
+    dst.dispatchEvent(new DragEvent('dragover', { bubbles:true, cancelable:true, dataTransfer: dt, clientX:r.left+10, clientY:y }));
+    var marked = dst.className.indexOf('drop-before')>=0 ? 'drop-before' : (dst.className.indexOf('drop-after')>=0?'drop-after':(dst.className.indexOf('drop-into')>=0?'drop-into':'?'));
+    dst.dispatchEvent(new DragEvent('drop', { bubbles:true, cancelable:true, dataTransfer: dt, clientX:r.left+10, clientY:y }));
+    src.dispatchEvent(new DragEvent('dragend', { bubbles:true, cancelable:true, dataTransfer: dt }));
+    return marked;
+  })()`);
+}
+
+let failed = 0;
+let cdp;
+const ok = (cond, label) => { console.log('   ' + (cond ? '✓ ' : '✗ ') + label); if (!cond) failed++; };
 
 try {
   const target = (await (async () => { for (let i = 0; i < 40; i++) { try { const l = await (await fetch('http://127.0.0.1:' + PORT + '/json/list')).json(); const p = l.find((t) => t.type === 'page'); if (p) return p; } catch (e) {} await sleep(250); } })());
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((res, rej) => { ws.addEventListener('open', res); ws.addEventListener('error', rej); });
-  const cdp = new CDP(ws);
+  cdp = new CDP(ws);
   await cdp.send('Page.enable'); await cdp.send('Runtime.enable'); await cdp.send('Network.enable');
   for (const part of cookie().split(';').map((s) => s.trim()).filter(Boolean)) {
     const i = part.indexOf('=');
@@ -85,91 +113,57 @@ try {
   await cdp.eval(`(function(){ var a=document.querySelectorAll('button,[role="button"]'); for(var i=0;i<a.length;i++){ if((a[i].getAttribute('aria-label')||'')==='工作台'){a[i].click();return 1;} } return 0; })()`);
   await sleep(3500);
 
-  console.log('① 拖之前的树');
-  const before = await cdp.eval(READ_TREE);
-  (before || []).forEach((t) => console.log('   ' + t));
+  const snap = async () => ({ tree: await cdp.eval(TREE), cats: await serverCats() });
+  const before = await snap();
+  console.log('起始：');
+  (before.tree || []).forEach((t) => console.log('   ' + t));
 
-  // 找两个都有成员的分类
-  const cats = (before || []).map((t) => t.split(':')[0]).filter((c) => (before.find((x) => x.startsWith(c + ':')) || '').split(':')[1]);
-  // 拖「最后一个分类」到「第一个分类」前面 ⇒ 位置必须真的变
-  const catA = cats[cats.length - 1];
-  const catB = cats[0];
-  if (!catA || !catB) { console.log('   （分类不足两个，跳过）'); process.exit(0); }
-  console.log('');
-  console.log('② 把分类「' + catA + '」拖到分类「' + catB + '」上面（换位置，不该改归属）');
-
-  const dragInfo = await cdp.eval(`(function(){
-    var host=${HOST};
-    var branches = host.shadowRoot.querySelectorAll('.side-branch');
-    var src=null, dst=null;
-    for (var i=0;i<branches.length;i++){
-      var c=(branches[i].querySelector('.side-cat')||{}).textContent;
-      if (c === '${catA}') src = branches[i].querySelector('.side-branch-head');
-      if (c === '${catB}') dst = branches[i].querySelector('.side-branch-head');
-    }
-    if (!src || !dst) return 'no-branch';
-    var dt = new DataTransfer();
-    var r = dst.getBoundingClientRect();
-    src.dispatchEvent(new DragEvent('dragstart', { bubbles:true, cancelable:true, dataTransfer: dt }));
-    dst.dispatchEvent(new DragEvent('dragover', { bubbles:true, cancelable:true, dataTransfer: dt, clientX:r.left+10, clientY:r.top+2 }));
-    var marked = dst.className.indexOf('drop-before')>=0 ? 'drop-before' : (dst.className.indexOf('drop-after')>=0?'drop-after':(dst.className.indexOf('drop-into')>=0?'drop-into':'?'));
-    dst.dispatchEvent(new DragEvent('drop', { bubbles:true, cancelable:true, dataTransfer: dt, clientX:r.left+10, clientY:r.top+2 }));
-    src.dispatchEvent(new DragEvent('dragend', { bubbles:true, cancelable:true, dataTransfer: dt }));
-    return '落点标记=' + marked;
+  // 找两个分类：一个有多个成员（当被拖的），一个有成员（当落点）
+  const cats = await cdp.eval(`(function(){
+    var host=${HOST}; var out=[];
+    host.shadowRoot.querySelectorAll('.side-branch').forEach(function(br){
+      out.push((br.querySelector('.side-cat')||{}).textContent + '|' + br.querySelectorAll('.side-leaf').length);
+    });
+    return out;
   })()`);
-  console.log('   ' + dragInfo);
+  const catA = cats.filter((c) => parseInt(c.split('|')[1], 10) > 0).pop().split('|')[0];
+  const catB = cats.filter((c) => parseInt(c.split('|')[1], 10) > 0)[0].split('|')[0];
+  const leafInB = catsOf(before.tree, catB).split(',')[0];
+
+  console.log('');
+  console.log('【用例 1】拖分类「' + catA + '」到分类「' + catB + '」上面');
+  const m1 = await drag(catA, catB, 'cat', 'upper');
   await sleep(3500);
+  const s1 = await snap();
+  console.log('   落点：' + m1);
+  ok(m1 === 'drop-before' || m1 === 'drop-after', '落点是「换先后」（不是 into）');
+  ok(catsOf(s1.tree, catA) === catsOf(before.tree, catA), '分类「' + catA + '」的成员没变（' + catsOf(s1.tree, catA) + '）');
+  ok((s1.tree || []).some((t) => t.startsWith(catA + ':')), '分类「' + catA + '」还在（仍是一级菜单）');
+  ok(JSON.stringify(s1.tree) !== JSON.stringify(before.tree), '顺序变了');
 
   console.log('');
-  console.log('③ 拖之后的树');
-  const after = await cdp.eval(READ_TREE);
-  (after || []).forEach((t) => console.log('   ' + t));
-
-  console.log('');
-  // 判据：分类还在（还是一级）、成员归属没变
-  const membersOf = (tree, cat) => { const row = (tree || []).find((x) => x.startsWith(cat + ':')); return row ? row.split(':')[1] : ''; };
-  const mA_before = membersOf(before, catA);
-  const mA_after = membersOf(after, catA);
-  const stillThere = (after || []).some((t) => t.startsWith(catA + ':'));
-  console.log('   分类「' + catA + '」还在吗？' + (stillThere ? '✓ 还在（仍是一级菜单）' : '❌ 没了（被降级了！）'));
-  console.log('   成员归属没变？' + (mA_before === mA_after ? '✓ 没变（' + mA_after + '）' : '❌ 变了：' + mA_before + ' → ' + mA_after));
-  const orderChanged = JSON.stringify(before) !== JSON.stringify(after);
-  console.log('   顺序变了？' + (orderChanged ? '✓ 变了' : '❌ 没变'));
-
-  // ③b 二级菜单（角色）拖 ⇒ 随意：拖到别的分类下 ⇒ 归属要变
-  console.log('');
-  console.log('③b 把角色拖到另一个分类下（这才是「二级可以随意」）');
-  const moveRole = await cdp.eval(`(function(){
-    var host=${HOST};
-    var leaves = host.shadowRoot.querySelectorAll('.side-leaf');
-    if (!leaves.length) return 'no-leaves';
-    var src = leaves[0];
-    var srcId = src.getAttribute('data-sc-id');
-    var branches = host.shadowRoot.querySelectorAll('.side-branch-head');
-    if (branches.length < 2) return 'no-branches';
-    var dst = branches[1];
-    var dt = new DataTransfer();
-    var r = dst.getBoundingClientRect();
-    src.dispatchEvent(new DragEvent('dragstart', { bubbles:true, cancelable:true, dataTransfer: dt }));
-    dst.dispatchEvent(new DragEvent('dragover', { bubbles:true, cancelable:true, dataTransfer: dt, clientX:r.left+10, clientY:r.top+5 }));
-    var marked = dst.className.indexOf('drop-into')>=0 ? 'drop-into' : '其它';
-    dst.dispatchEvent(new DragEvent('drop', { bubbles:true, cancelable:true, dataTransfer: dt, clientX:r.left+10, clientY:r.top+5 }));
-    src.dispatchEvent(new DragEvent('dragend', { bubbles:true, cancelable:true, dataTransfer: dt }));
-    return srcId + ' → 落点 ' + marked;
-  })()`);
-  console.log('   ' + moveRole);
+  console.log('【用例 2】拖角色「' + leafInB + '」到分类「' + catA + '」上面（上半区）');
+  const before2 = await snap();
+  const m2 = await drag(catB, catA, 'leaf', 'upper', leafInB);
   await sleep(3500);
-  const after2 = await cdp.eval(READ_TREE);
-  (after2 || []).forEach((t) => console.log('   ' + t));
+  const s2 = await snap();
+  console.log('   落点：' + m2);
+  ok(m2 === 'drop-before', '落点是 drop-before（只换顺序）');
+  ok(catsOf(s2.tree, catB) === catsOf(before2.tree, catB), '分类「' + catB + '」的成员没变');
 
-  // 服务端也看一眼分类字段
-  const sc = await api('GET', '/api/scenes');
-  const cats2 = (sc.scenes || []).map((x) => x.name + '(' + x.category + ')');
-  console.log('   服务端分类字段：' + cats2.join(' '));
-
-  // ④ 右键菜单
   console.log('');
-  console.log('④ 右键菜单');
+  console.log('【用例 3】拖角色「' + leafInB + '」到分类「' + catA + '」下面（下半区）');
+  const before3 = await snap();
+  const m3 = await drag(catB, catA, 'leaf', 'lower', leafInB);
+  await sleep(3500);
+  const s3 = await snap();
+  console.log('   落点：' + m3);
+  ok(m3 === 'drop-into', '落点是 drop-into（加入分类）');
+  ok(catsOf(s3.tree, catA).indexOf(leafInB) >= 0, '角色加入了分类「' + catA + '」');
+  ok(catsOf(s3.tree, catB).indexOf(leafInB) < 0, '角色离开了分类「' + catB + '」');
+
+  console.log('');
+  console.log('【用例 4】右键菜单');
   const menu = await cdp.eval(`(function(){
     var host=${HOST};
     var leaf = host.shadowRoot.querySelector('.side-leaf');
@@ -179,69 +173,24 @@ try {
     var m = document.querySelector('.ctx-menu');
     if (!m) return '菜单没出来';
     var items=[]; m.querySelectorAll('.ctx-item').forEach(function(i){ items.push(i.textContent); });
-    return { 菜单项: items, 位置: m.style.left + ',' + m.style.top };
+    return items.join(' | ');
   })()`);
-  console.log('   ' + JSON.stringify(menu));
+  console.log('   ' + menu);
+  ok(String(menu).indexOf('改名') >= 0 && String(menu).indexOf('删除') >= 0, '场景菜单有「改名」和「删除」');
 
-  const rename = await cdp.eval(`(function(){
-    var m = document.querySelector('.ctx-menu');
-    if (!m) return 'no-menu';
-    var btns = m.querySelectorAll('.ctx-item');
-    for (var i=0;i<btns.length;i++){ if (btns[i].textContent.indexOf('改名')>=0) { btns[i].click(); return 'clicked'; } }
-    return 'no-rename';
-  })()`);
-  console.log('   点改名：' + rename);
-  await sleep(1200);
-  const dlg = await cdp.eval(`(function(){
-    var host=${HOST};
-    var d = host && host.shadowRoot.querySelector('.dialog.open');
-    if (!d) return 'no-dialog';
-    return { 标题:(d.querySelector('h3')||{}).textContent, 输入框值:(d.querySelector('.dialog-input')||{}).value };
-  })()`);
-  console.log('   对话框：' + JSON.stringify(dlg));
-  // 取消，不真改名
-  await cdp.eval(`(function(){
-    var host=${HOST};
-    var d = host && host.shadowRoot.querySelector('.dialog.open');
-    if (!d) return;
-    var btns = d.querySelectorAll('.dialog-actions .chip');
-    for (var i=0;i<btns.length;i++){ if (btns[i].textContent.indexOf('取消')>=0) { btns[i].click(); return; } }
-  })()`);
-
-  // ⑤ 分类的右键菜单
+  // 恢复数据
   console.log('');
-  console.log('⑤ 分类的右键菜单');
-  const catMenu = await cdp.eval(`(function(){
-    var host=${HOST};
-    var head = host.shadowRoot.querySelector('.side-branch-head');
-    if (!head) return 'no-head';
-    var r = head.getBoundingClientRect();
-    head.dispatchEvent(new MouseEvent('contextmenu', { bubbles:true, cancelable:true, clientX:r.left+20, clientY:r.top+5 }));
-    var m = document.querySelector('.ctx-menu');
-    if (!m) return '菜单没出来';
-    var items=[]; m.querySelectorAll('.ctx-item').forEach(function(i){ items.push(i.textContent); });
-    var st = document.getElementById('wb-menu-style');
-    return { 菜单项: items, 样式注入了: !!st, 背景色: m ? getComputedStyle(m).backgroundColor : '?' };
-  })()`);
-  console.log('   ' + JSON.stringify(catMenu));
-  await cdp.eval(`(function(){ var m=document.querySelector('.ctx-menu'); if(m){ var b=m.querySelectorAll('.ctx-item'); for(var i=0;i<b.length;i++){ if(b[i].textContent.indexOf('取消')>=0){b[i].click();return;} } } })()`);
-
-  // 截一张带菜单的图
-  await cdp.eval(`(function(){
-    var host=${HOST};
-    var head = host.shadowRoot.querySelector('.side-branch-head');
-    if (!head) return;
-    var r = head.getBoundingClientRect();
-    head.dispatchEvent(new MouseEvent('contextmenu', { bubbles:true, cancelable:true, clientX:r.left+30, clientY:r.top+8 }));
-  })()`);
-  await sleep(600);
-  await cdp.send('Page.captureScreenshot', { format: 'png' }).then((r) => {
-    fs.writeFileSync(path.join(process.cwd(), 'data', 'ctxmenu.png'), Buffer.from(r.data, 'base64'));
-    console.log('截图：data/ctxmenu.png');
-  }).catch(() => {});
+  console.log('（恢复测试动过的数据）');
+  for (const pair of [['command', '指挥'], ['reading', '阅读'], ['work', '工作'], ['dispatch', '协作'], ['invest', '投资'], ['analysis', '分析'], ['sport', '运动'], ['ops', '运维'], ['review', '复盘'], ['llmwiki', '知识']]) {
+    await api('POST', '/api/scene/category', { id: pair[0], category: pair[1] });
+  }
+  await api('POST', '/api/scene/order', { ids: ['command', 'reading', 'work', 'dispatch', 'invest', 'analysis', 'sport', 'ops', 'review', 'llmwiki'] });
+  console.log('   ' + await serverCats());
 
   console.log('');
+  console.log(failed ? ('✗ 有 ' + failed + ' 项没过') : '✓ 四个用例全过');
   console.log('控制台报错：' + (cdp.errors.length ? cdp.errors.slice(0, 3).join(' | ') : '无'));
+  process.exitCode = failed ? 1 : 0;
 } catch (e) {
   console.error('失败：' + e.message);
   process.exitCode = 1;

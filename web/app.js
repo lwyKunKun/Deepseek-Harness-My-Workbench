@@ -277,8 +277,16 @@ function makeDropTarget(el, targetId, isBranch) {
     e.stopPropagation();
     try { e.dataTransfer.dropEffect = 'move'; } catch (err) { /* ignore */ }
     var r = el.getBoundingClientRect();
-    if (isBranch) { markDrop(el, 'into'); return; }
-    markDrop(el, (e.clientY < r.top + r.height / 2) ? 'before' : 'after');
+    var upper = (e.clientY < r.top + r.height / 2);
+    if (isBranch) {
+      // 分类标题：
+      //   拖**角色** ⇒ 上半区 = 排在这个分类前面（只换顺序，不改归属）
+      //                     下半区 = 加入这个分类（改归属）
+      //   拖**分类** ⇒ 只有换位置（见上面的分支）
+      markDrop(el, upper ? 'before' : 'into');
+      return;
+    }
+    markDrop(el, upper ? 'before' : 'after');
   });
   el.addEventListener('dragleave', function (e) {
     if (el.contains(e.relatedTarget)) return;
@@ -326,8 +334,24 @@ function moveScene(draggedId, targetId, mode) {
     if (dragged && (dragged.category || '未分类') !== cat) newCat = cat;
   } else {
     var t = order.indexOf(targetId);
-    if (t < 0) return;
-    idx = mode === 'before' ? t : t + 1;
+    if (t < 0) {
+      // 落点是**分类标题**（targetId = 分类名）⇒ 排到那个分类的前/后
+      //   ⚠ 只换顺序，**不改归属** —— 一级菜单的成员不能被动。
+      var tCat = targetId.indexOf('cat:') === 0 ? targetId.slice(4) : targetId;
+      var first = -1;
+      var lastOf = -1;
+      order.forEach(function (id, i) {
+        var sc = STATE.scenes.filter(function (s) { return s.id === id; })[0];
+        if (sc && (sc.category || '未分类') === tCat) {
+          if (first < 0) first = i;
+          lastOf = i;
+        }
+      });
+      if (first < 0) return;
+      idx = mode === 'before' ? first : lastOf + 1;
+    } else {
+      idx = mode === 'before' ? t : t + 1;
+    }
   }
   order.splice(idx, 0, draggedId);
 
