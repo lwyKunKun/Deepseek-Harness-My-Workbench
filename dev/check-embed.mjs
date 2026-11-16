@@ -496,22 +496,13 @@ try {
   })()`);
   console.log('点「打开对话」：' + chat);
   await sleep(14000);      // 引擎界面重，给它时间把会话钉上
-  const portInfo2 = await cdp.eval(`(function(){
-    var host=null;
-    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
-    var f = host && host.shadowRoot.querySelector('.cat-main iframe');
-    return { 有 __wbAllocPort: typeof window.__wbAllocPort, iframe: f ? f.src : '(无)' };
-  })()`);
-  console.log('端口诊断：' + JSON.stringify(portInfo2));
-
   const portInfo = await cdp.eval(`(function(){
     var host=null;
     document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
     var f = host && host.shadowRoot.querySelector('.cat-main iframe');
     return {
-      父页面有 __wbAllocPort 吗: typeof window.__wbAllocPort,
-      父页面有 __wbFreePort 吗: typeof window.__wbFreePort,
-      iframe src: f ? (f.src||'').slice(0,60) : '(无)',
+      hasAllocPort: typeof window.__wbAllocPort,
+      iframeSrc: f ? (f.src||'').slice(0,60) : '(none)',
     };
   })()`);
   console.log('端口：' + JSON.stringify(portInfo));
