@@ -176,6 +176,18 @@ function renderCatalog() {
     });
     // 拖到分类标题上 ⇒ 落到这个分类的末尾（分类会跟着变）
     makeDropTarget(bh, g.name, true);
+    // ★ 分类本身也能拖（分类的顺序 = 它第一个成员的位置）
+    makeDraggable(bh, 'cat:' + g.name);
+    // 分类的右键菜单：改名 / 删除这个分类下的角色
+    wbBindMenu(bh, [
+      { id: 'rename-cat', label: '改分类名…' },
+      { separator: true },
+      { id: 'delete-cat', label: '删掉这个分类', danger: true,
+        hint: '只删分类（角色移到「未分类」），角色本身不删' },
+    ], function (what) {
+      if (what === 'rename-cat') renameCategory(g);
+      else if (what === 'delete-cat') deleteCategory(g);
+    });
     branch.appendChild(bh);
 
     if (isOpen) {
@@ -222,6 +234,8 @@ function makeDraggable(el, id) {
     DRAG.id = id;
     DRAG.at = Date.now();
     el.classList.add('dragging');
+    var tree = el.closest ? el.closest('.side-tree') : null;
+    if (tree) tree.classList.add('dragging');
     try {
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', id);
@@ -229,15 +243,36 @@ function makeDraggable(el, id) {
   });
   el.addEventListener('dragend', function () {
     el.classList.remove('dragging');
+    var tree = el.closest ? el.closest('.side-tree') : null;
+    if (tree) tree.classList.remove('dragging');
     clearDropMarks();
     DRAG.id = '';
   });
 }
 
-/** 让一个元素可以接收放下。 */
+/**
+ * 让一个元素可以接收放下。
+ *
+ * ⚠ 层级规则（机主定的）：
+ *   · 一级菜单（分类）拖 ⇒ **只能换位置**，永远是枝，不会变成别人的二级。
+ *     所以分类落在分类上 = 「两个分类换先后」，不是「降级」。
+ *   · 二级菜单（角色）拖 ⇒ 随意：落分类上 = 加入该分类；
+ *     落角色上/下 = 换顺序；拖到别的分类的分类上 = 也只是换先后。
+ */
 function makeDropTarget(el, targetId, isBranch) {
   el.addEventListener('dragover', function (e) {
     if (!DRAG.id || DRAG.id === targetId) return;
+    // 拖分类落到分类上 ⇒ 不给「into」的语义（那是「加入」），只给 before/after
+    var draggingCat = DRAG.id.indexOf('cat:') === 0;
+    if (draggingCat && isBranch) {
+      // 分类标题：按上下半区 ⇒ before / after（换先后）
+      e.preventDefault();
+      e.stopPropagation();
+      try { e.dataTransfer.dropEffect = 'move'; } catch (err) { /* ignore */ }
+      var r0 = el.getBoundingClientRect();
+      markDrop(el, (e.clientY < r0.top + r0.height / 2) ? 'before' : 'after');
+      return;
+    }
     e.preventDefault();                       // 不 preventDefault 就不许放
     e.stopPropagation();
     try { e.dataTransfer.dropEffect = 'move'; } catch (err) { /* ignore */ }
@@ -264,6 +299,10 @@ function makeDropTarget(el, targetId, isBranch) {
 
 /** 真的挪：算新顺序 → 存 → 刷。 */
 function moveScene(draggedId, targetId, mode) {
+  // 拖的是**分类**（id 形如 'cat:阅读'）⇒ 整个分类一起挪
+  if (draggedId.indexOf('cat:') === 0) {
+    return moveCategory(draggedId.slice(4), targetId, mode);
+  }
   var order = STATE.scenes.map(function (s) { return s.id; });
   var from = order.indexOf(draggedId);
   if (from < 0) return;
@@ -303,6 +342,68 @@ function moveScene(draggedId, targetId, mode) {
     .catch(function (e) { wbToast('没挪成：' + (e && e.message || e), true); });
 }
 
+/**
+ * 挪一个**分类**（连带它下面所有角色）。
+ *
+ * 分类在界面上是「枝」，它没有自己的行 —— 它的位置 = 它第一个成员在总顺序里的位置。
+ * 所以拖分类 = 把它的成员当成一整块，插到目标位置。
+ */
+function moveCategory(catName, targetId, mode) {
+  var members = STATE.scenes.filter(function (s) { return (s.category || '未分类') === catName; });
+  if (!members.length) return;
+
+  // ⛔ 一级菜单（分类）**只能换位置**，永远是一级菜单。
+  //   拖到别的分类上 ⇒ 是「这两个分类换先后」，**不是**「这个分类降级成别人的二级」。
+  //   所以：分类之间拖 ⇒ 只动顺序，成员的 category 一个都不改。
+  var memberIds = members.map(function (s) { return s.id; });
+  var order = STATE.scenes.map(function (s) { return s.id; });
+  var rest = order.filter(function (id) { return memberIds.indexOf(id) < 0; });
+
+  var idx;
+  var targetCat = null;
+  if (mode === 'into') {
+    // 落到某个分类（分类标题）⇒ 排到它后面
+    targetCat = targetId.indexOf('cat:') === 0 ? targetId.slice(4) : targetId;
+    var last = -1;
+    rest.forEach(function (id, i) {
+      var sc = STATE.scenes.filter(function (s) { return s.id === id; })[0];
+      if (sc && (sc.category || '未分类') === targetCat) last = i;
+    });
+    idx = last + 1;
+  } else {
+    // 落到某个角色上 ⇒ 排到它前面/后面（角色不动）
+    var t = rest.indexOf(targetId);
+    if (t < 0) {
+      // 落到的是**分类标题**（targetId = 分类名）⇒ 排到那个分类的前/后
+      var tCat = targetId.indexOf('cat:') === 0 ? targetId.slice(4) : targetId;
+      var first = -1;
+      rest.forEach(function (id, i) {
+        var sc = STATE.scenes.filter(function (s) { return s.id === id; })[0];
+        if (first < 0 && sc && (sc.category || '未分类') === tCat) first = i;
+      });
+      if (first < 0) return;
+      idx = mode === 'before' ? first : first + 1;
+      if (mode === 'after') {
+        // 「after」= 排在那个分类**整块之后**
+        var end = first;
+        rest.forEach(function (id, i) {
+          var sc = STATE.scenes.filter(function (s) { return s.id === id; })[0];
+          if (sc && (sc.category || '未分类') === tCat) end = i;
+        });
+        idx = end + 1;
+      }
+    } else {
+      idx = mode === 'before' ? t : t + 1;
+    }
+  }
+
+  var next = rest.slice(0, idx).concat(memberIds, rest.slice(idx));
+  api('POST', '/api/scene/order', { ids: next })
+    .then(function () { return refreshScenes(); })
+    .then(function () { wbToast('「' + catName + '」挪好了'); })
+    .catch(function (e) { wbToast('没挪成：' + (e && e.message || e), true); });
+}
+
 /** 树上的一个叶子 = 一个角色。 */
 function sideLeaf(s, active) {
   var row = el('div', 'side-leaf' + (active ? ' active' : ''));
@@ -326,7 +427,114 @@ function sideLeaf(s, active) {
   });
   makeDraggable(row, s.id);
   makeDropTarget(row, s.id, false);
+  // 右键菜单：改名 / 换分类 / 删除
+  wbBindMenu(row, [
+    { id: 'rename', label: '改名…' },
+    { id: 'category', label: '换分类…' },
+    { separator: true },
+    { id: 'delete', label: '删除这个场景', danger: true },
+  ], function (what) {
+    if (what === 'rename') renameScene(s);
+    else if (what === 'category') changeCategory(s);
+    else if (what === 'delete') confirmDeleteScene(s);
+  });
   return row;
+}
+
+/* ── 右键菜单的动作：改名 / 换分类 ──────────────────────────────── */
+
+/** 改分类名 ⇒ 该分类下所有场景的 category 都跟着改。 */
+function renameCategory(g) {
+  var old = g.name;
+  wbDialog({
+    title: '改分类名：' + old,
+    desc: '这个分类下有 ' + g.scenes.length + ' 个角色，它们的分类会一起改成新名字。',
+    submitText: '改好了',
+    fields: [{ key: 'name', label: '新分类名', type: 'text', value: old }],
+    onSubmit: function (v) {
+      var name = String(v.name || '').trim();
+      if (!name) throw new Error('分类名不能空');
+      if (name === old) return { ok: true };
+      // 一个一个改（分类改名不是批量接口，但每个角色都有 /api/scene/category）
+      return g.scenes.reduce(function (chain, sc) {
+        return chain.then(function () {
+          return api('POST', '/api/scene/category', { id: sc.id, category: name });
+        });
+      }, Promise.resolve()).then(function () {
+        wbToast('分类改成「' + name + '」了');
+        return refreshScenes();
+      });
+    },
+  });
+}
+
+/** 删分类 ⇒ 角色移到「未分类」（角色本身留着）。 */
+function deleteCategory(g) {
+  wbDialog({
+    title: '删掉分类「' + g.name + '」',
+    desc: '这个分类下有 ' + g.scenes.length + ' 个角色。\n'
+      + '它们会移到「未分类」，**角色本身不会删**。',
+    submitText: '删分类',
+    fields: [],
+    onSubmit: function () {
+      return g.scenes.reduce(function (chain, sc) {
+        return chain.then(function () {
+          return api('POST', '/api/scene/category', { id: sc.id, category: '未分类' });
+        });
+      }, Promise.resolve()).then(function () {
+        wbToast('分类删了，角色移到「未分类」');
+        return refreshScenes();
+      });
+    },
+  });
+}
+
+function renameScene(s) {
+  wbDialog({
+    title: '改名：' + s.name,
+    desc: '改的是场景的名字（' + s.id + '）。分类和职责不动。',
+    submitText: '改好了',
+    fields: [{ key: 'name', label: '新名字', type: 'text', value: s.name || '' }],
+    onSubmit: function (v) {
+      var name = String(v.name || '').trim();
+      if (!name) throw new Error('名字不能空');
+      if (name === s.name) return { ok: true };
+      return api('POST', '/api/scene/rename', { id: s.id, name: name }).then(function (r) {
+        if (!r || !r.ok) throw new Error((r && r.error) || '改名失败');
+        wbToast('改成「' + r.name + '」了');
+        return refreshScenes();
+      });
+    },
+  });
+}
+
+function changeCategory(s) {
+  // 分类列表 = 现有的分类 + 新的一个
+  var cats = [];
+  STATE.scenes.forEach(function (x) {
+    var c = x.category || '未分类';
+    if (cats.indexOf(c) < 0) cats.push(c);
+  });
+  if (cats.indexOf('未分类') < 0) cats.push('未分类');
+  wbDialog({
+    title: '换分类：' + s.name,
+    desc: '换一个分类（也可以直接把它拖到别的分类标题上）。',
+    submitText: '换',
+    fields: [{
+      key: 'category', label: '分类', type: 'select',
+      options: cats.map(function (c) { return { value: c, label: c }; }),
+      value: s.category || '未分类',
+    }],
+    onSubmit: function (v) {
+      var cat = String(v.category || '').trim() || '未分类';
+      if (cat === (s.category || '未分类')) return { ok: true };
+      return api('POST', '/api/scene/category', { id: s.id, category: cat }).then(function (r) {
+        if (!r || !r.ok) throw new Error((r && r.error) || '换分类失败');
+        wbToast('移到「' + cat + '」了');
+        return refreshScenes();
+      });
+    },
+  });
 }
 
 /* ── 删除场景：先看清楚要删什么，再让它删 ──────────────────────── */
@@ -421,19 +629,15 @@ function renderSceneCards(id) {
     sc.skills.forEach(function (t) { tags.appendChild(el('span', 'cat-main-tag', t)); });
     head.appendChild(tags);
   }
-  var open = el('button', 'panel-btn solid', '打开场景');
-  open.addEventListener('click', function () { openScene(sc.id); });
-  head.appendChild(open);
   main.appendChild(head);
 
-  /* 五张卡 */
+  /* 四张摘要卡：身份卡 · 项目信息 · 索引 · AI 会话 */
   var grid = el('div', 'panel-card-grid');
   var cId = panelCard('身份卡', '每场读的那张卡');
   var cMem = panelCard('项目信息', '§〇 开场先读');
   var cIdx = panelCard('索引', '场景索引 · 资产索引');
-  var cHeal = panelCard('体检', '这个场景的');
   var cAi = panelCard('AI 会话', '常驻会话');
-  [cId, cMem, cIdx, cHeal, cAi].forEach(function (c) { grid.appendChild(c); });
+  [cId, cMem, cIdx, cAi].forEach(function (c) { grid.appendChild(c); });
   main.appendChild(grid);
 
   /* 填内容（异步，取完再填） */
@@ -442,16 +646,6 @@ function renderSceneCards(id) {
     fillCard(cId, (r.card || '').replace(/^#.*\n/, '').trim(), 10);
     var sec0 = String(r.main || '').split(/^##\s*§〇.*$/m)[1] || '';
     fillCard(cMem, sec0.trim(), 9);
-    var h = r.health || {};
-    var problems = (h.problems || []);
-    var warns = (h.warns || []);
-    var lines = [];
-    if (problems.length) lines = lines.concat(problems);
-    if (warns.length) lines = lines.concat(warns);
-    if (!lines.length) lines.push('✓ 一切正常');
-    lines.push('§〇 ' + kb(h.sec0) + ' / 4K');
-    lines.push('主文件 ' + kb(h.bytes) + ' / 25K');
-    fillCard(cHeal, lines.join('\n'), 9);
   });
 
   api('GET', '/api/index').then(function (r) {
@@ -475,8 +669,9 @@ function renderSceneCards(id) {
   } else {
     cAi.body.appendChild(el('div', 'panel-card-empty', '还没绑常驻会话 —— 去场景里建一条'));
   }
-  var go = el('button', 'panel-btn', '打开对话');
-  go.addEventListener('click', function () { openScene(sc.id); });
+  // 「打开对话」⇒ 直接把那条常驻会话摆出来（不再跳到另一个页面）
+  var go = el('button', 'panel-btn solid', '打开对话');
+  go.addEventListener('click', function () { openChat(sc); });
   cAi.body.appendChild(go);
 
   return main;
@@ -485,6 +680,58 @@ function renderSceneCards(id) {
 function openScene(id) {
   STATE.open = id;
   render();
+}
+
+/**
+ * 把某个角色的常驻会话摆出来（AI 会话卡的「打开对话」）。
+ * 场景页右区从「摘要卡」切成「真会话面板」。
+ */
+function openChat(sc) {
+  var ai = (sc.panels || []).filter(function (p) { return p.type === 'harness'; })[0];
+  if (!ai || !ai.sessionId) {
+    wbToast('这个角色还没绑常驻会话 —— 去场景里建一条');
+    return;
+  }
+  // ⚠ 不走 render()：那会把右区整个重建（摘要卡先闪一下再换掉）。
+  //   直接把右区换成会话面板。
+  var host = wbRoot();
+  var view = host.querySelector('#view');
+  if (!view) return;
+  var main = view.querySelector('.cat-main');
+  if (!main) return;
+  cleanupPanels();          // 收掉摘要卡那一堆面板（不重画）
+  main.innerHTML = '';
+  var head = el('div', 'cat-main-head');
+  var back = el('button', 'panel-btn', '← 摘要');
+  back.addEventListener('click', function () { STATE.open = null; render(); });
+  head.appendChild(back);
+  head.appendChild(el('div', 'cat-main-icon', sc.icon || '●'));
+  var nm = el('div', 'cat-main-names');
+  nm.appendChild(el('div', 'cat-main-name', (ai.title || 'AI·' + sc.name)));
+  nm.appendChild(el('div', 'cat-main-duty', '常驻会话 · ' + ai.sessionId));
+  head.appendChild(nm);
+  main.appendChild(head);
+
+  var grid = el('div', 'panel-grid');
+  grid.style.gridTemplateColumns = '1fr';
+  var p = {
+    id: ai.id, title: ai.title || 'AI·' + sc.name, sub: '常驻会话',
+    type: 'harness', col: 1, row: 1, w: 1, h: 8, expand: true,
+    sessionId: ai.sessionId, sessionTitle: ai.sessionTitle, pinTarget: ai.pinTarget,
+    scenario: sc.id,
+  };
+  var built = mkPanel(p, 0);
+  grid.appendChild(built.wrap);
+  main.appendChild(grid);
+  var fn = window.APP_RENDERERS.harness;
+  if (fn) {
+    try {
+      var c = fn(built.body, p, built.head);
+      if (typeof c === 'function') STATE.cleanups.push(c);
+    } catch (err) {
+      built.body.appendChild(el('div', 'todo-empty', '面板渲染失败：' + err.message));
+    }
+  }
 }
 
 /* ── ② 场景详情：固定五个面板 ──────────────────────────────────── */

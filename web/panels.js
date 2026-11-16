@@ -1407,6 +1407,186 @@ PANELS.bookshelf = function (body, meta, head) {
   return function () { /* noop */ };
 };
 
+/* ── 20. notes：仓库条目（通用版） ─────────────────────────────────
+ *
+ * 读角色绑定的仓库目录下的 md，按 frontmatter 挑着显示。
+ * 和「书架」的区别：书架是书（进度条/状态三组），这里是**任意条目**
+ * —— 概念卡、运动记录、股票池…
+ *
+ * 显示哪些字段由面板配置决定（fields），没配就按类型猜。
+ */
+PANELS.notes = function (body, meta, head) {
+  var acts = wbHeadActs(head, meta.id);
+  var sceneId = meta.scene || meta.scenario || '';
+  var dir = meta.dir || '';
+  var fields = Array.isArray(meta.fields) ? meta.fields : null;   // 要显示的 frontmatter 字段
+
+  var box = wbEl('div', 'notes-box');
+  body.appendChild(box);
+
+  var top = wbEl('div', 'notes-top');
+  var count = wbEl('div', 'notes-count', '读取中…');
+  top.appendChild(count);
+  var search = wbEl('input', 'notes-search');
+  search.placeholder = '搜标题…';
+  top.appendChild(search);
+  box.appendChild(top);
+
+  var list = wbEl('div', 'notes-list');
+  box.appendChild(list);
+
+  var reader = wbEl('div', 'notes-reader');
+  reader.style.display = 'none';
+  box.appendChild(reader);
+
+  var all = [];
+  var kw = '';
+
+  /** 没配 fields ⇒ 按 frontmatter 里有什么来显示。 */
+  function pickFields(fm) {
+    if (fields && fields.length) return fields;
+    var preferred = ['date', 'type', 'subtype', 'distance_m', 'duration_min', 'avg_pace',
+      'calories', 'avg_heart_rate', 'feel', 'location', 'author', 'updated'];
+    var keys = Object.keys(fm || {});
+    var out = [];
+    for (var i = 0; i < preferred.length; i++) {
+      if (keys.indexOf(preferred[i]) >= 0) out.push(preferred[i]);
+    }
+    return out.slice(0, 4);
+  }
+
+  function labelOf(k) {
+    var map = {
+      date: '日期', type: '类型', subtype: '泳姿', distance_m: '距离(米)',
+      duration_min: '时长(分)', avg_pace: '配速', calories: '卡路里',
+      avg_heart_rate: '平均心率', max_heart_rate: '最大心率', feel: '体感',
+      location: '地点', author: '作者', updated: '更新于', notes: '备注',
+    };
+    return map[k] || k;
+  }
+
+  function fmt(k, v) {
+    if (v == null || v === '') return '';
+    if (k === 'distance_m') return v + ' 米';
+    if (k === 'duration_min') return v + ' 分钟';
+    if (k === 'calories') return v + ' 千卡';
+    if (k === 'avg_heart_rate' || k === 'max_heart_rate') return v + ' bpm';
+    if (k === 'feel') return v + ' /5';
+    return String(v);
+  }
+
+  function noteRow(n) {
+    var row = wbEl('div', 'notes-item');
+    row.setAttribute('data-note', n.path);
+
+    var head = wbEl('div', 'notes-item-head');
+    head.appendChild(el('span', 'notes-item-title', n.title || n.file));
+    if (n.date) head.appendChild(el('span', 'notes-item-date', n.date));
+    row.appendChild(head);
+
+    var fs2 = pickFields(n.fm);
+    if (fs2.length) {
+      var metaLine = wbEl('div', 'notes-item-meta');
+      fs2.forEach(function (k) {
+        var v = fmt(k, n.fm[k]);
+        if (!v) return;
+        metaLine.appendChild(el('span', 'notes-chip', labelOf(k) + ' ' + v));
+      });
+      row.appendChild(metaLine);
+    }
+    if (n.excerpt) row.appendChild(el('div', 'notes-item-excerpt', n.excerpt));
+
+    row.addEventListener('click', function () { openNote(n); });
+    return row;
+  }
+
+  function render() {
+    list.innerHTML = '';
+    var rows = all.filter(function (n) {
+      if (!kw) return true;
+      var t = (n.title || n.file) + ' ' + (n.excerpt || '');
+      return t.toLowerCase().indexOf(kw.toLowerCase()) >= 0;
+    });
+    count.textContent = all.length + ' 条' + (kw ? '（匹配 ' + rows.length + '）' : '');
+    acts.diag.textContent = rows.length + ' 条';
+    if (!rows.length) { list.appendChild(el('div', 'todo-empty', all.length ? '没有匹配的' : '这个目录里没有 md')); return; }
+    rows.forEach(function (n) { list.appendChild(noteRow(n)); });
+  }
+
+  function load() {
+    wbApi('GET', '/api/vault/notes?scene=' + encodeURIComponent(sceneId) + '&dir=' + encodeURIComponent(dir))
+      .then(function (r) {
+        if (!r || !r.ok) {
+          count.textContent = '';
+          list.appendChild(el('div', 'todo-empty', (r && r.error) || '读不到仓库'));
+          return;
+        }
+        all = r.notes || [];
+        render();
+      });
+  }
+
+  /* ── 打开一条：读正文 ── */
+  function openNote(n) {
+    wbApi('GET', '/api/vault/note?scene=' + encodeURIComponent(sceneId) + '&path=' + encodeURIComponent(n.path))
+      .then(function (r) {
+        if (!r || !r.ok) { wbToast('读不到：' + (r && r.error), true); return; }
+        reader.innerHTML = '';
+        reader.style.display = '';
+        list.style.display = 'none';
+        var head2 = wbEl('div', 'notes-reader-head');
+        var back = wbEl('button', 'chip', '← 列表');
+        back.addEventListener('click', function () {
+          reader.style.display = 'none';
+          reader.innerHTML = '';
+          list.style.display = '';
+        });
+        head2.appendChild(back);
+        head2.appendChild(el('div', 'notes-reader-title', n.title || n.file));
+        reader.appendChild(head2);
+
+        // frontmatter 的关键字段摆出来
+        var fmKeys = pickFields(n.fm);
+        if (fmKeys.length) {
+          var metaLine = wbEl('div', 'notes-reader-meta');
+          fmKeys.forEach(function (k) {
+            var v = fmt(k, n.fm[k]);
+            if (v) metaLine.appendChild(el('span', 'notes-chip', labelOf(k) + ' ' + v));
+          });
+          reader.appendChild(metaLine);
+        }
+
+        var pre = wbEl('div', 'notes-md');
+        pre.appendChild(wbMd(n.content || ''));
+        reader.appendChild(pre);
+      });
+  }
+
+  search.addEventListener('input', function () { kw = search.value.trim(); render(); });
+
+  load();
+  return function () { /* noop */ };
+};
+
+/** 极简 markdown → 元素（标题/列表/引用/表格/分隔线/代码块）。 */
+function wbMd(md) {
+  var box = wbEl('div', 'md');
+  String(md || '').split(/\r?\n/).forEach(function (line) {
+    var t = line.trim();
+    if (!t) { box.appendChild(wbEl('div', 'md-gap')); return; }
+    if (t === '---') { box.appendChild(wbEl('hr', 'md-hr')); return; }
+    if (t.startsWith('```')) { box.appendChild(wbEl('div', 'md-code', '（代码块）')); return; }
+    var h = t.match(/^(#{1,6})\s+(.*)$/);
+    if (h) { box.appendChild(wbEl('div', 'md-h md-l' + (h[1].length), h[2])); return; }
+    if (t.startsWith('> ')) { box.appendChild(wbEl('div', 'md-q', t.slice(2))); return; }
+    var li = t.match(/^[-*+]\s+(.*)$/);
+    if (li) { box.appendChild(wbEl('div', 'md-li', '· ' + li[1])); return; }
+    if (t.startsWith('|')) { box.appendChild(wbEl('div', 'md-tb', t)); return; }
+    box.appendChild(wbEl('div', 'md-p', t.replace(/^`this\.\w+\s*$/, '')));
+  });
+  return box;
+}
+
 /* ── 14. dashboard：仪表盘（五套机制的状态 + 现在该做什么） ─────── */
 PANELS.dashboard = function (body, meta, head) {
   var acts = wbHeadActs(head, meta.id);

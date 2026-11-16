@@ -826,13 +826,18 @@ body { overflow: hidden; }
 
 /* 拖拽排序：拖起来的行变淡，落点画一条线 / 整块高亮 */
 .side-leaf, .side-branch-head { position: relative; }
-.side-leaf.dragging { opacity: .35; }
+/* 能拖的行给个抓手提示（分类标题也能接） */
+.side-leaf[draggable="true"] { cursor: grab; }
+.side-leaf[draggable="true"]:active { cursor: grabbing; }
+.side-leaf.dragging { opacity: .35; cursor: grabbing; }
 .side-leaf.drop-before { box-shadow: inset 0 2px 0 0 var(--accent); }
 .side-leaf.drop-after { box-shadow: inset 0 -2px 0 0 var(--accent); }
 .side-branch-head.drop-into {
   background: var(--accent-soft);
   box-shadow: inset 0 0 0 1px var(--accent);
 }
+/* 拖起来时整棵树的边线淡一点，暗示「正在挪」 */
+.side-tree.dragging .side-leaf:not(.dragging) { opacity: .75; }
 
 /* 右：选中角色的面板卡 */
 .cat-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: var(--sp-3); }
@@ -1085,3 +1090,80 @@ body { overflow: hidden; }
 .md-li { color: var(--text); padding-left: var(--sp-3); }
 .md-gap { height: var(--sp-2); }
 .md-hr { border: none; border-top: 1px solid var(--border); margin: var(--sp-3) 0; }
+
+/* ── 仓库条目（通用版：概念卡 / 运动记录 / 股票池 …） ─────────────── */
+.notes-box { display: flex; flex-direction: column; gap: var(--sp-2); height: 100%; }
+.notes-top { display: flex; align-items: center; gap: var(--sp-2); }
+.notes-count { font-size: var(--fs-xs); color: var(--text-dim); white-space: nowrap; }
+.notes-search {
+  flex: 1 1 auto; min-width: 0;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg-soft); color: var(--text);
+  font: inherit; font-size: var(--fs-xs); padding: 3px 8px;
+}
+.notes-search:focus { outline: none; border-color: var(--accent); }
+.notes-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: var(--sp-2); }
+
+.notes-item {
+  padding: var(--sp-2); border-radius: var(--r-md);
+  cursor: pointer; transition: background var(--dur);
+}
+.notes-item:hover { background: var(--bg-panel-hover); }
+.notes-item-head { display: flex; align-items: baseline; gap: var(--sp-2); }
+.notes-item-title { font-size: var(--fs-md); font-weight: 600; }
+.notes-item-date { font-size: var(--fs-xs); color: var(--text-dim); margin-left: auto; white-space: nowrap; }
+.notes-item-meta { display: flex; gap: var(--sp-1); flex-wrap: wrap; margin-top: 4px; }
+.notes-chip {
+  font-size: var(--fs-xs); color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: 999px; padding: 0 7px; line-height: 16px;
+}
+.notes-item-excerpt {
+  font-size: var(--fs-xs); color: var(--text-dim); opacity: .85; margin-top: 4px;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+
+.notes-reader {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  border-top: 1px solid var(--border);
+  padding-top: var(--sp-2); margin-top: var(--sp-2);
+}
+.notes-reader-head { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-2); }
+.notes-reader-title { font-size: var(--fs-lg); font-weight: 600; }
+.notes-reader-meta { display: flex; gap: var(--sp-1); flex-wrap: wrap; margin-bottom: var(--sp-2); }
+.md-tb {
+  font-size: var(--fs-xs); color: var(--text-dim);
+  border-left: 2px solid var(--border); padding-left: var(--sp-2);
+  white-space: pre-wrap; font-family: ui-monospace, monospace;
+}
+.md-code {
+  font-size: var(--fs-xs); color: var(--text-dim);
+  background: var(--bg-soft); border: 1px solid var(--border);
+  border-radius: var(--r-sm); padding: var(--sp-2); margin: var(--sp-1) 0;
+}
+
+/* ── 右键菜单 ─────────────────────────────────────────────────── */
+.ctx-menu {
+  position: fixed; z-index: 9999;
+  min-width: 168px; padding: 4px;
+  background: var(--bg-panel); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  box-shadow: 0 10px 34px rgba(0, 0, 0, .55);
+  font-size: var(--fs-sm);
+}
+.ctx-item {
+  display: block; width: 100%; text-align: left;
+  border: none; border-radius: var(--r-sm);
+  background: transparent; color: var(--text);
+  font: inherit; font-size: var(--fs-sm);
+  padding: 6px 10px; cursor: pointer;
+}
+.ctx-item:hover { background: var(--bg-panel-hover); }
+.ctx-item.danger { color: var(--err); }
+.ctx-item.danger:hover { background: rgba(239, 93, 109, .14); }
+.ctx-item.disabled { opacity: .45; cursor: default; }
+.ctx-sep { height: 1px; margin: 4px 2px; background: var(--border); }
+
+/* 分类标题也能拖 ⇒ 给个抓手 */
+.side-branch-head[draggable="true"] { cursor: grab; }
+.side-branch-head[draggable="true"]:active { cursor: grabbing; }
+.side-branch-head.dragging { opacity: .4; }

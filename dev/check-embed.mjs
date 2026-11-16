@@ -485,6 +485,59 @@ try {
     });
   } catch (e) { /* ignore */ }
 
+  // 点「打开对话」⇒ 右边换成真会话面板
+  const chat = await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    if (!host) return 'no-shadow';
+    var btns = host.shadowRoot.querySelectorAll('.panel-card .panel-btn');
+    for (var i=0;i<btns.length;i++){ if ((btns[i].textContent||'').indexOf('打开对话')>=0) { btns[i].click(); return 'clicked'; } }
+    return 'no-button';
+  })()`);
+  console.log('点「打开对话」：' + chat);
+  await sleep(14000);      // 引擎界面重，给它时间把会话钉上
+  const portInfo2 = await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    var f = host && host.shadowRoot.querySelector('.cat-main iframe');
+    return { 有 __wbAllocPort: typeof window.__wbAllocPort, iframe: f ? f.src : '(无)' };
+  })()`);
+  console.log('端口诊断：' + JSON.stringify(portInfo2));
+
+  const portInfo = await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    var f = host && host.shadowRoot.querySelector('.cat-main iframe');
+    return {
+      父页面有 __wbAllocPort 吗: typeof window.__wbAllocPort,
+      父页面有 __wbFreePort 吗: typeof window.__wbFreePort,
+      iframe src: f ? (f.src||'').slice(0,60) : '(无)',
+    };
+  })()`);
+  console.log('端口：' + JSON.stringify(portInfo));
+
+  const iframeInfo = await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    var f = host && host.shadowRoot.querySelector('.cat-main iframe');
+    if (!f) return 'no-iframe';
+    var r = f.getBoundingClientRect();
+    return { src: (f.src||'').slice(0, 90), w: Math.round(r.width), h: Math.round(r.height) };
+  })()`);
+  console.log('iframe：' + JSON.stringify(iframeInfo));
+
+  const chatState = await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    var main = host && host.shadowRoot.querySelector('.cat-main');
+    if (!main) return 'no-main';
+    var panels = main.querySelectorAll('.panel').length;
+    var frames = 0;
+    host.shadowRoot.querySelectorAll('iframe').forEach(function(f){ frames++; });
+    return { panels: panels, iframes: frames, title: (main.querySelector('.cat-main-name')||{}).textContent };
+  })()`);
+  console.log('会话面板：' + JSON.stringify(chatState));
+
   console.log('');
   console.log('── ③ 控制台报错 ──');
   if (!cdp.errors.length) console.log('   ✓ 没有报错');

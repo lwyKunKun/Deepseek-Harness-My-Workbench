@@ -79,10 +79,11 @@ function toEmbedCss(css) {
  * panels.js + app.js 包一层 IIFE。
  * 为什么不直接引两个 <script>：那会把 STATE / el / api 这些名字撒进 DSH 页面的全局。
  */
-function toBundleJs(panelsSrc, appSrc) {
+function toBundleJs(menuSrc, panelsSrc, appSrc) {
   return [
     '/* 工作台前端（嵌进 DSH 界面用）：包一层，避免污染全局 */',
     '(function () {',
+    menuSrc,
     panelsSrc,
     appSrc,
     '})();',
@@ -142,9 +143,8 @@ export function apply(ctx, config = {}) {
     }
     if (sub === '/bundle.js') {
       const web = wb.cfg.PATHS.web;
-      const panels = fs.existsSync(path.join(web, 'panels.js')) ? fs.readFileSync(path.join(web, 'panels.js'), 'utf8') : '';
-      const app = fs.existsSync(path.join(web, 'app.js')) ? fs.readFileSync(path.join(web, 'app.js'), 'utf8') : '';
-      sendText(res, 200, toBundleJs(panels, app), 'text/javascript; charset=utf-8');
+      const read = (f) => (fs.existsSync(path.join(web, f)) ? fs.readFileSync(path.join(web, f), 'utf8') : '');
+      sendText(res, 200, toBundleJs(read('menu.js'), read('panels.js'), read('app.js')), 'text/javascript; charset=utf-8');
       return;
     }
 

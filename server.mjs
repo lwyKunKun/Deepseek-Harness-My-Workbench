@@ -509,6 +509,30 @@ export async function handleRequest(req, res) {
       return;
     }
 
+    // ── 改一个场景的名字（右键菜单「改名」） ──────────────────────
+    if (p === '/api/scene/rename' && req.method === 'POST') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      const id = String(body.id || '').trim();
+      const name = String(body.name || '').trim();
+      if (!id) { sendJson(res, 400, { ok: false, error: '要改哪个场景？' }); return; }
+      if (!name) { sendJson(res, 400, { ok: false, error: '名字不能空' }); return; }
+      const file = path.join(PATHS.scenarios, id + '.json');
+      const raw = readJson(file);
+      if (!raw) { sendJson(res, 404, { ok: false, error: '没有这个场景：' + id }); return; }
+      const old = raw.name || id;
+      raw.name = name;
+      // description 是「一句话职责」，名字变了但职责没变 ⇒ 只更新 name
+      writeJson(file, raw);
+      // 地盘表里的名字也跟着改（否则面板上显示的还是旧名）
+      const terr = authority.loadTerritory();
+      if (terr.scenes && terr.scenes[id]) {
+        terr.scenes[id].name = name;
+        authority.saveTerritory(terr);
+      }
+      sendJson(res, 200, { ok: true, id, name, old });
+      return;
+    }
+
     // ── 改一个场景的分类（树上把它拖到别的分类下时用） ──────────────
     if (p === '/api/scene/category' && req.method === 'POST') {
       const body = JSON.parse((await readBody(req)) || '{}');
@@ -562,6 +586,16 @@ export async function handleRequest(req, res) {
             done: groups['已读完'].length,
           },
         });
+        return;
+      }
+
+      // 通用条目（概念卡 / 运动记录 / 股票池 …）：列一个目录下的所有 md
+      if (action === 'notes') {
+        const sub = String(url.searchParams.get('dir') || '').trim();
+        const limit = Number(url.searchParams.get('limit') || 0);
+        const r = vault.readNotes(root, sub, { limit });
+        if (!r.ok) { sendJson(res, 400, { ok: false, error: r.error }); return; }
+        sendJson(res, 200, { ok: true, root, dir: sub, notes: r.notes, total: r.total });
         return;
       }
 
