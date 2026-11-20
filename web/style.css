@@ -868,11 +868,20 @@ body { overflow: hidden; }
 }
 .panel-card:hover { border-color: var(--accent); }
 
-/* 可双击进详情页的卡：悬停时给个提示角标 */
+/* 可双击进详情页的卡：明摆着一个「详情」按钮 + 悬停时的 ⤢ 角标 */
 .panel-card.dbl-open { cursor: default; }
+.panel-card-open {
+  flex: 0 0 auto; margin-left: auto;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: transparent; color: var(--text-dim);
+  font: inherit; font-size: var(--fs-xs);
+  padding: 1px 9px; cursor: pointer;
+  transition: color var(--dur), border-color var(--dur), background var(--dur);
+}
+.panel-card-open:hover { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }
 .panel-card.dbl-open .panel-card-head::after {
   content: '⤢';
-  margin-left: auto; padding-left: var(--sp-2);
+  margin-left: var(--sp-2);
   font-size: 11px; color: var(--text-dim); opacity: 0;
   transition: opacity var(--dur);
 }

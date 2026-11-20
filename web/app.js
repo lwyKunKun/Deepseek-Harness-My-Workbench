@@ -602,6 +602,15 @@ function kb(bytes) {
   return (Math.round(n / 1024 * 10) / 10) + 'K';
 }
 
+/* 双击判定：两次点击同一张卡、间隔在 DBL_MS 内 ⇒ 算双击。
+ * ⚠ 为什么自己判、不用浏览器的 dblclick 事件：
+ *   浏览器只在「两次点击的目标链完全一致」时才派发 dblclick ——
+ *   点到卡片里的文字/小按钮/滚动条，就可能不派发。
+ *   自己判 ⇒ 稳。
+ */
+var DBL_MS = 450;
+var DBL_STATE = { card: null, at: 0 };
+
 /**
  * 一张面板卡的壳子（内容稍后填）。
  *
@@ -621,12 +630,28 @@ function panelCard(title, sub, sceneId) {
 
   if (sceneId) {
     card.classList.add('dbl-open');
-    card.title = '双击打开详情页';
-    card.addEventListener('dblclick', function (e) {
-      // 别让双击选中的文字/点到的按钮触发
-      if (e.target && e.target.closest && e.target.closest('button, a, input, textarea')) return;
-      e.preventDefault();
+    card.title = '双击这张卡 ⇒ 打开详情页';
+    // 明摆着一个入口（双击是省事的那个，不是唯一的那个）
+    var open = el('button', 'panel-card-open', '详情');
+    open.title = '打开详情页';
+    open.addEventListener('click', function (e) {
+      e.stopPropagation();
       openScene(sceneId);
+    });
+    head.appendChild(open);
+    card.addEventListener('click', function (e) {
+      // 点在按钮/链接上 ⇒ 不当双击的一部分（那些有自己的行为）
+      if (e.target && e.target.closest && e.target.closest('button, a, input, textarea')) {
+        DBL_STATE.card = null;
+        return;
+      }
+      var now = Date.now();
+      if (DBL_STATE.card === card && now - DBL_STATE.at <= DBL_MS) {
+        DBL_STATE.card = null;
+        openScene(sceneId);
+        return;
+      }
+      DBL_STATE = { card: card, at: now };
     });
   }
   return card;
@@ -686,7 +711,10 @@ function renderSceneCards(id) {
   api('GET', '/api/memory?scene=' + encodeURIComponent(id)).then(function (r) {
     if (!r || !r.ok) { fillCard(cId, '（读不到）'); return; }
     fillCard(cId, (r.card || '').replace(/^#.*\n/, '').trim(), 10);
+    // ⚠ §〇 的提取要在**下一个小节**那里停住 ——
+    //   只按「## §〇」切一刀的话，后面 §一/§二/§五/§六 全都跟着进来了。
     var sec0 = String(r.main || '').split(/^##\s*§〇.*$/m)[1] || '';
+    sec0 = sec0.split(/\n##\s/)[0];
     fillCard(cMem, sec0.trim(), 9);
   });
 
