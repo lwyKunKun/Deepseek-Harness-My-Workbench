@@ -447,6 +447,7 @@ function sideLeaf(s, active) {
   row.addEventListener('click', function () {
     if (Date.now() - DRAG.at < 300) return;      // 刚拖完，别当成点击
     STATE.selected = s.id;
+    wbAct(s.id, '选中场景', s.name);
     render();
   });
   makeDraggable(row, s.id);
@@ -601,8 +602,13 @@ function kb(bytes) {
   return (Math.round(n / 1024 * 10) / 10) + 'K';
 }
 
-/** 一张面板卡的壳子（内容稍后填）。 */
-function panelCard(title, sub) {
+/**
+ * 一张面板卡的壳子（内容稍后填）。
+ *
+ * ⚠ **双击**这张卡 ⇒ 打开该场景的详情页（正式面板，不是摘要）。
+ *   单击不动 —— 摘要卡上要能选字、点按钮，双击才不会误触。
+ */
+function panelCard(title, sub, sceneId) {
   var card = el('div', 'panel-card');
   var head = el('div', 'panel-card-head');
   head.appendChild(el('div', 'panel-card-title', title));
@@ -612,6 +618,17 @@ function panelCard(title, sub) {
   body.appendChild(el('div', 'panel-card-empty', '读取中…'));
   card.appendChild(body);
   card.body = body;         // 方便后面填内容
+
+  if (sceneId) {
+    card.classList.add('dbl-open');
+    card.title = '双击打开详情页';
+    card.addEventListener('dblclick', function (e) {
+      // 别让双击选中的文字/点到的按钮触发
+      if (e.target && e.target.closest && e.target.closest('button, a, input, textarea')) return;
+      e.preventDefault();
+      openScene(sceneId);
+    });
+  }
   return card;
 }
 
@@ -655,13 +672,14 @@ function renderSceneCards(id) {
   }
   main.appendChild(head);
 
-  /* 四张摘要卡：身份卡 · 项目信息 · 索引 · AI 会话 */
+  /* 五张摘要卡：身份卡 · 项目信息 · 索引 · AI 会话 · 操作留痕 */
   var grid = el('div', 'panel-card-grid');
-  var cId = panelCard('身份卡', '每场读的那张卡');
-  var cMem = panelCard('项目信息', '§〇 开场先读');
-  var cIdx = panelCard('索引', '场景索引 · 资产索引');
-  var cAi = panelCard('AI 会话', '常驻会话');
-  [cId, cMem, cIdx, cAi].forEach(function (c) { grid.appendChild(c); });
+  var cId = panelCard('身份卡', '每场读的那张卡', id);
+  var cMem = panelCard('项目信息', '§〇 开场先读', id);
+  var cIdx = panelCard('索引', '场景索引 · 资产索引', id);
+  var cAi = panelCard('AI 会话', '常驻会话', id);
+  var cAct = panelCard('操作留痕', '这个场景发生过的一切');
+  [cId, cMem, cIdx, cAi, cAct].forEach(function (c) { grid.appendChild(c); });
   main.appendChild(grid);
 
   /* 填内容（异步，取完再填） */
@@ -683,6 +701,20 @@ function renderSceneCards(id) {
     fillCard(cIdx, lines.join('\n'), 9);
   });
 
+  /* 操作留痕：这个场景里发生过的每一次操作（人 + 服务端 + AI） */
+  api('GET', '/api/actlog?scene=' + encodeURIComponent(id) + '&limit=8').then(function (r) {
+    if (!r || !r.ok) { fillCard(cAct, '（读不到留痕）'); return; }
+    var lines = (r.entries || []).slice().reverse().map(function (e) {
+      var who = e.actor === 'ai' ? 'AI' : (e.actor === 'system' ? '系统' : '我');
+      var t = (e.time || wbLocalTime(e)).slice(0, 5);   // ⚠ 本地时间（不是 UTC）
+      return t + '　' + who + '　' + e.action + (e.target ? '　' + e.target : '');
+    });
+    fillCard(cAct, lines.join('\n'), 8);
+    var more = el('button', 'panel-btn', '打开场景看留痕');
+    more.addEventListener('click', function () { openScene(id, '留痕'); });
+    cAct.body.appendChild(more);
+  });
+
   /* AI 会话那张卡：会话信息 + 打开按钮（真会话界面太大，嵌不进卡片） */
   var ai = (sc.panels || []).filter(function (p) { return p.type === 'harness'; })[0];
   cAi.body.innerHTML = '';
@@ -701,8 +733,12 @@ function renderSceneCards(id) {
   return main;
 }
 
-function openScene(id) {
+function openScene(id, tab) {
   STATE.open = id;
+  var sc = STATE.scenes.filter(function (s) { return s.id === id; })[0];
+  wbAct(id, '进入场景', sc ? sc.name : id);
+  // 想直接落到某个页签上（如「留痕」）⇒ 告诉那个面板
+  if (tab) window.__WB_MEM_TAB = { scene: id, tab: tab };
   render();
 }
 
@@ -723,6 +759,7 @@ function openChat(sc) {
   if (!view) return;
   var main = view.querySelector('.cat-main');
   if (!main) return;
+  wbAct(sc.id, '打开会话', (ai && ai.sessionTitle) || sc.name);
   cleanupPanels();          // 收掉摘要卡那一堆面板（不重画）
   main.innerHTML = '';
   var head = el('div', 'cat-main-head');
@@ -807,19 +844,23 @@ function renderSceneDetail(id) {
     col: 4, row: 4, w: 1, h: 2,
     scene: id,
   });
-  // 书架：角色的仓库目录若是 Obsidian 库 ⇒ 挂「书架」面板（读真实 md）
-  var sc2 = STATE.scenes.filter(function (x) { return x.id === id; })[0];
-  if (sc2 && sc2.projectRoot) {
+  // 书架：**只挂给声明了 books 型仓库的场景**（现在只有「阅读」）。
+  //   ⛔ 别按 projectRoot 挂 —— LLM-wiki / 运动 绑的是同一个 Obsidian 库，
+  //   按库挂 ⇒ 那些模块下也冒出书架（书架归阅读一个模块）。
+  var bookDir = (sc.vaultDirs || []).filter(function (v) { return v && v.kind === 'books'; })[0];
+  if (sc.projectRoot && bookDir) {
     layout.push({
       id: id + '-shelf',
-      title: '书架',
+      title: bookDir.title || '书架',
       sub: 'Obsidian 书库',
       type: 'bookshelf',
       col: 1, row: 6, w: 3, h: 5,
       scene: id,
-      dir: '05-Bookshelf/书籍list',
+      dir: bookDir.dir || '05-Bookshelf/书籍list',
     });
   }
+  // ⚠ 留痕**不再单开一个面板** —— 它住在「项目信息」面板的「留痕」页签里
+  //   （同一个场景发生的每一次操作：人 + 服务端 + AI，都在那条时间线上）。
 
   var grid = el('div', 'panel-grid');
   grid.style.gridTemplateColumns = 'repeat(4, 1fr)';

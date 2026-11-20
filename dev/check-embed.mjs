@@ -485,6 +485,46 @@ try {
     });
   } catch (e) { /* ignore */ }
 
+  // 双击摘要卡 ⇒ 进详情页
+  const dbl = await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    if (!host) return 'no-shadow';
+    var cards = host.shadowRoot.querySelectorAll('.panel-card');
+    if (!cards.length) return 'no-card';
+    var c = cards[0];
+    var title = (c.querySelector('.panel-card-title')||{}).textContent;
+    c.dispatchEvent(new MouseEvent('dblclick', { bubbles:true, cancelable:true }));
+    return '双击了：' + title;
+  })()`);
+  console.log('双击摘要卡：' + dbl);
+  await sleep(3500);
+  const detail = await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    if (!host) return 'no-shadow';
+    var panels = host.shadowRoot.querySelectorAll('.panel').length;
+    var back = host.shadowRoot.querySelector('.detail-head button');
+    return { 面板数: panels, 有返回按钮: !!back,
+             详情标题: (host.shadowRoot.querySelector('.detail-name')||{}).textContent };
+  })()`);
+  console.log('详情页：' + JSON.stringify(detail));
+
+  // 详情页截一张图
+  await cdp.send('Page.captureScreenshot', { format: 'png' }).then((r) => {
+    fs.writeFileSync(path.join(process.cwd(), 'data', 'scene-detail.png'), Buffer.from(r.data, 'base64'));
+    console.log('详情页截图：data/scene-detail.png');
+  }).catch(() => {});
+
+  // 回目录
+  await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    var back = host && host.shadowRoot.querySelector('.detail-head button');
+    if (back) back.click();
+  })()`);
+  await sleep(2000);
+
   // 点「打开对话」⇒ 右边换成真会话面板
   const chat = await cdp.eval(`(function(){
     var host=null;
