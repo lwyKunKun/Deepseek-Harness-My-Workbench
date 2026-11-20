@@ -557,6 +557,15 @@ try {
   })()`);
   console.log('iframe：' + JSON.stringify(iframeInfo));
 
+  // AI 面板的诊断小字：钉住状态
+  const diag = await cdp.eval(`(function(){
+    var host=null;
+    document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });
+    var d = host && host.shadowRoot.querySelector('.panel-diag');
+    return d ? { 状态: d.textContent, 详情: d.title } : '(没有诊断小字)';
+  })()`);
+  console.log('AI 面板诊断：' + JSON.stringify(diag, null, 1).replace(/\\n/g, ' | '));
+
   const chatState = await cdp.eval(`(function(){
     var host=null;
     document.querySelectorAll('*').forEach(function(el){ if (el.shadowRoot && el.shadowRoot.querySelector('#topbar')) host=el; });

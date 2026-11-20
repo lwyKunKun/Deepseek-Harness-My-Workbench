@@ -152,28 +152,55 @@
     }
     return out;
   }
-  /** 当前画面上的会话标题：优先 DOM 里选中的行，其次 document.title。 */
-  function titleOf() {
-    var sel = document.querySelector('[role="treeitem"][aria-selected="true"], [aria-selected="true"]');
+  /**
+   * 当前画面上的会话标题 —— **候选列表**（不是一个）。
+   *
+   * ⚠ 为什么是候选列表（2026-11 修）：
+   *   引擎界面里**「对话」这个页签也有 aria-selected="true"**，
+   *   以前 pin.js 只认「第一个 aria-selected 的元素」⇒ 把「对话」当成了会话标题
+   *   ⇒ 永远匹配不上目标 ⇒ 报「✗ 找不到会话行」，
+   *   可实际上会话**早就打开对了**（引擎把会话名放在 document.title 里）。
+   *   而且面板 iframe 窄的时候侧栏压根不渲染 ⇒ 树里一条会话行都没有。
+   *
+   * 所以两个来源都收下，谁匹配上算谁：
+   *   ① 侧栏里选中的**会话行**（treeitem，别把页签当成行）
+   *   ② document.title（引擎的「<会话名> — DeepSeek Harness」）
+   */
+  function titleCandidates() {
+    var out = [];
+    // ① 侧栏里选中的会话行（只看 treeitem —— 页签不是会话行）
+    var sel = document.querySelector('div[role="treeitem"][aria-selected="true"]');
     if (sel) {
       var t = readText(sel);
-      if (t) return { title: t, src: 'dom' };
+      if (t) out.push({ title: t, src: 'row' });
     }
-    var dt = String(document.title || '').replace(/\s*[—–-]\s*DSH.*$/i, '').trim();
-    if (dt) return { title: dt, src: 'title' };
-    return { title: '', src: '' };
+    // ② 文档标题
+    //    ⚠ 引擎的标题是「<会话名> — DeepSeek Harness」，不是「— DSH」⇒ 后缀要认全。
+    var dt = String(document.title || '')
+      .replace(/\s*[—–-]\s*(DSH|DeepSeek Harness)\s*$/i, '')
+      .trim();
+    if (dt) out.push({ title: dt, src: 'title' });
+    return out;
   }
-  /** 画面上是不是已经是我们要的那条？ */
-  function titlePinned(current) {
-    var t = norm(current);
-    if (!t) return false;
+  /** 画面上是不是已经是我们要的那条？（任一候选匹配上就算） */
+  function titlePinned(candidates) {
+    var list = Array.isArray(candidates) ? candidates : [{ title: candidates, src: '' }];
     var bind = readBind();
-    if (bind && bind.title && t === norm(bind.title)) return true;
-    if (SESSION_TITLE && t === norm(SESSION_TITLE)) return true;
-    for (var i = 0; i < TARGETS.length; i++) {
-      if (t.indexOf(norm(TARGETS[i])) >= 0) return true;
+    for (var c = 0; c < list.length; c++) {
+      var t = norm(list[c].title);
+      if (!t) continue;
+      if (bind && bind.title && t === norm(bind.title)) return true;
+      if (SESSION_TITLE && t === norm(SESSION_TITLE)) return true;
+      for (var i = 0; i < TARGETS.length; i++) {
+        if (norm(TARGETS[i]) && t.indexOf(norm(TARGETS[i])) >= 0) return true;
+      }
     }
     return false;
+  }
+  /** 第一个候选（报告用）。 */
+  function titleOf() {
+    var list = titleCandidates();
+    return list.length ? list[0] : { title: '', src: '' };
   }
   /** 找一个标题匹配的行。优先完全相等，其次包含。 */
   function findBest(rows) {
@@ -224,7 +251,8 @@
 
   // ── 诊断回传 ────────────────────────────────────────────────────
   function report(extra) {
-    var cur = titleOf();
+    var cands = titleCandidates();
+    var cur = cands.length ? cands[0] : { title: '', src: '' };
     var d = {
       source: 'wb-pin',
       panel: PANEL,
@@ -235,7 +263,8 @@
       bound: readBind(),
       title: cur.title,
       titleSrc: cur.src,
-      pinned: titlePinned(cur.title),
+      titles: cands.map(function (c) { return c.title; }),
+      pinned: titlePinned(cands),
       rows: allRows().length,
       clickedAt: window.__wbPinClickedAt || 0,
     };
@@ -255,11 +284,16 @@
       var b0 = readBind();
       if (!b0 || !b0.title) { report({ state: 'unbound' }); return; }
     }
-    var cur = titleOf();
-    if (titlePinned(cur.title)) {
+    var cands = titleCandidates();
+    if (titlePinned(cands)) {
       // 记住了这条的精确标题，下次按标题认人更准
       var bind = readBind();
-      if (cur.title && (!bind || bind.title !== cur.title)) saveBind(cur.title);
+      for (var ci = 0; ci < cands.length; ci++) {
+        var ct = cands[ci].title;
+        if (!ct) continue;
+        if (bind && bind.title === ct) break;
+        if (SESSION_TITLE && norm(ct) === norm(SESSION_TITLE)) { saveBind(ct); break; }
+      }
       report({ state: 'pinned' });
       return;
     }
@@ -290,17 +324,20 @@
       return;
     }
 
-    // ③ 展开一个折叠的分组，下一轮再找
+    // ③ 展开折叠的分组，下一轮再找
+    //    ⚠ 以前只展开**第一个**折叠分组 ⇒ 目标会话在别的分组里就永远找不到。
+    //       现在一次把**所有**折叠分组都展开（点一次是展开，点两次是收起 ⇒ 只点一次）。
     var collapsed = [];
-    document.querySelectorAll('div[role="treeitem"][aria-expanded]').forEach(function (e) {
-      if (e.getAttribute('aria-expanded') === 'false') collapsed.push(e);
+    document.querySelectorAll('div[role="treeitem"][aria-expanded="false"]').forEach(function (e) {
+      collapsed.push(e);
     });
     if (collapsed.length) {
-      doClick(collapsed[0]);
-      report({ state: 'expanding' });
+      for (var i = 0; i < collapsed.length; i++) doClick(collapsed[i]);
+      report({ state: 'expanding', expanded: collapsed.length });
       return;
     }
 
+    // ④ 都展开了还是找不到 ⇒ 画面上确实没有这条（会话被归档/改名了）
     report({ state: 'not-found' });
   }
 
@@ -315,8 +352,7 @@
   // 心跳诊断：报**当前真实状态**，别把「已钉住」刷成「检测中」
   setInterval(function () {
     try {
-      var cur = titleOf();
-      report({ state: titlePinned(cur.title) ? 'pinned' : 'idle' });
+      report({ state: titlePinned(titleCandidates()) ? 'pinned' : 'idle' });
     } catch (e) { report({ state: 'idle' }); }
   }, 5000);
 

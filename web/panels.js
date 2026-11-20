@@ -43,6 +43,32 @@ function wbToast(text, bad) {
   setTimeout(function () { t.classList.add('out'); }, 2600);
   setTimeout(function () { t.remove(); }, 3200);
 }
+
+/**
+ * ★ 留一笔操作痕迹（人在界面上的动作）。
+ *
+ * 服务端自己改的东西（进度·加书·上传·写记忆）由后端就地留痕；
+ * 这里补的是**只有界面知道**的动作：进场景、开哪本书、翻到第几条…
+ *
+ * 失败不打扰人 —— 留痕是辅助，不该挡住正事。
+ */
+function wbAct(scene, action, target, detail) {
+  if (!scene || !action) return;
+  try {
+    var payload = {
+      scene: String(scene),
+      actor: 'user',
+      action: String(action),
+      target: target == null ? '' : String(target),
+      detail: detail == null ? '' : detail,
+    };
+    fetch(wbBase() + '/api/actlog', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).catch(function () { /* 留不上就算了 */ });
+  } catch (e) { /* 同上 */ }
+}
 /** 往标题栏塞一组小按钮 + 一行诊断小字。 */
 function wbHeadActs(head, id) {
   var acts = wbEl('div', 'panel-acts');
@@ -101,6 +127,7 @@ PANELS.harness = function (body, meta, head) {
       '目标会话：' + (d.sessionId || '（未指定）') + '\n' +
       '存储里的当前会话：' + (d.stored || '（空）') + '\n' +
       '画面上的会话：' + (d.title || '读不到') + '\n' +
+      (d.titles && d.titles.length > 1 ? '候选标题：' + d.titles.join(' / ') + '\n' : '') +
       '会话行数：' + (d.rows != null ? d.rows : '?') + '\n' +
       '（点这行小字 = 忘掉记住的标题，重新按会话名匹配）';
     diag.className = 'panel-diag ' + (d.pinned ? 'ok' : (d.state === 'not-found' ? 'bad' : ''));
@@ -124,7 +151,254 @@ PANELS.harness = function (body, meta, head) {
   };
 };
 
-/* ── 2. memory：项目信息.md（分节）+ 身份卡 ─────────────────────── */
+/* ── 留痕的折叠/聚合（只动显示，不动数据） ──────────────────────────
+ *
+ * 为什么折：台账里 87% 是「选中场景 / 进入场景」这种纯点击（实测 157 条里 136 条），
+ *   再加上会话里 AI 的每次 bash/read ⇒ 一个场景 250+ 行，真事淹没在噪声里。
+ *
+ * 折法：
+ *   · 导航动作（选中场景 / 进入场景）⇒ 一天合成一行「进出场景 ×N」
+ *   · AI 的工具调用 ⇒ 按工具名合成一行「bash ×12　14:02→14:09」，点开看明细
+ *   · 有结果的动作（打开书 / 写记忆 / 更新阅读进度…）⇒ 一条一行，不折
+ *
+ * ⚠ 台账（data/acts/*.jsonl）照旧**全记**：折叠只是显示层，随时能查全量。
+ */
+
+/** 纯导航动作：点一下树、进出场景 —— 不算「干了什么」。 */
+var ACT_NAV_ACTIONS = { '选中场景': 1, '进入场景': 1 };
+
+function actIsNav(e) { return e.actor !== 'ai' && !!ACT_NAV_ACTIONS[e.action]; }
+function actIsTool(e) { return e.actor === 'ai'; }
+function actDayOf(e) { return e.day || wbLocalDay(e); }
+
+/** 一批留痕 ⇒ 「天 → 折好的行」（新的在前）。 */
+function actBuildGroups(entries) {
+  var days = [];
+  var byDay = new Map();
+  (entries || []).forEach(function (e) {
+    var day = actDayOf(e);
+    var d = byDay.get(day);
+    if (!d) {
+      d = { day: day, nav: null, tools: [], toolMap: new Map(), singles: [] };
+      byDay.set(day, d);
+      days.push(d);
+    }
+    if (actIsNav(e)) {
+      if (!d.nav) d.nav = { kind: 'nav', count: 0, byAction: {}, items: [], first: e, last: e };
+      d.nav.count += 1;
+      d.nav.byAction[e.action] = (d.nav.byAction[e.action] || 0) + 1;
+      d.nav.items.push(e);
+      d.nav.last = e;
+      return;
+    }
+    if (actIsTool(e)) {
+      var g = d.toolMap.get(e.action);
+      if (!g) {
+        g = { kind: 'tool', action: e.action, count: 0, items: [], first: e, last: e };
+        d.toolMap.set(e.action, g);
+        d.tools.push(g);
+      }
+      g.count += 1;
+      g.items.push(e);
+      g.last = e;
+      return;
+    }
+    d.singles.push({ kind: 'one', entry: e, last: e });
+  });
+  days.reverse();                       // 新的天在前
+  days.forEach(function (d) {
+    var list = [];
+    if (d.nav) list.push(d.nav);
+    d.tools.forEach(function (g) { list.push(g); });
+    d.singles.forEach(function (s) { list.push(s); });
+    list.sort(function (a, b) { return (b.last.at || 0) - (a.last.at || 0); });
+    d.rows = list;
+  });
+  return days;
+}
+
+/* ── 操作留痕的视图（项目信息里的「留痕」页签 / 独立的留痕面板共用） ── */
+
+/**
+ * 留痕的本地日期 / 本地时间。
+ *
+ * ⚠ 踩过的坑：台账里存的是 **ISO UTC**（`2026-11-17T09:09:07.930Z`）——
+ *   以前直接切字符串 `ts.slice(11,19)` 显示出来的是 **UTC**，
+ *   本地是 CST+8 就整整差 8 小时 ⇒ 「每个场景的留痕时间都是错的」。
+ *   现在一律用 `at`（epoch ms）换成本地时间。
+ */
+function wbLocalDay(e) {
+  var d = wbActInstant(e);
+  if (!d) return '';
+  var p = function (n) { return String(n).padStart(2, '0'); };
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+function wbLocalTime(e) {
+  var d = wbActInstant(e);
+  if (!d) return '';
+  var p = function (n) { return String(n).padStart(2, '0'); };
+  return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+/** 一条留痕的时刻（epoch ms；没有 at 就从 ts 解析）。 */
+function wbActInstant(e) {
+  var at = Number(e && e.at);
+  if (at) return new Date(at);
+  var t = Date.parse(String((e && e.ts) || ''));
+  return isNaN(t) ? null : new Date(t);
+}
+
+/**
+ * 画一条操作时间线。
+ * @param {HTMLElement} box  容器
+ * @param {string} sceneId   场景 id
+ * @param {function} onLoad  每次取到数据后回调（条数）
+ * @returns {{refresh: function}} 刷新函数
+ */
+function wbActlogView(box, sceneId, onLoad) {
+  box.innerHTML = '';
+  var top = wbEl('div', 'act-top');
+  var filters = wbEl('div', 'act-filters');
+  top.appendChild(filters);
+  var exportBtn = wbEl('button', 'chip', '导出 Markdown');
+  exportBtn.addEventListener('click', function () {
+    wbApi('POST', '/api/actlog/export', { scene: sceneId }).then(function (r) {
+      if (!r || !r.ok) { wbToast('导不出：' + ((r && r.error) || '未知'), true); return; }
+      wbToast('已导出 ' + r.count + ' 条 → ' + r.path);
+    }).catch(function (e) { wbToast('导不出：' + ((e && e.message) || e), true); });
+  });
+  top.appendChild(exportBtn);
+  var refreshBtn = wbEl('button', 'chip', '刷新');
+  top.appendChild(refreshBtn);
+  box.appendChild(top);
+
+  var foldNote = wbEl('div', 'act-foldnote');
+  box.appendChild(foldNote);
+  var list = wbEl('div', 'act-list');
+  box.appendChild(list);
+
+  var rows = [];
+  var summary = null;
+  var who = 'all';          // all | user | ai
+
+  function renderFilters() {
+    filters.innerHTML = '';
+    [['all', '全部'], ['user', '人'], ['ai', 'AI']].forEach(function (pair) {
+      var b = wbEl('button', 'chip' + (who === pair[0] ? ' solid' : ''), pair[1]);
+      b.addEventListener('click', function () { who = pair[0]; renderFilters(); render(); });
+      filters.appendChild(b);
+    });
+  }
+
+  function detailOf(d) {
+    if (!d) return null;
+    if (typeof d === 'object') {
+      var keys = Object.keys(d);
+      if (!keys.length) return null;
+      var span = wbEl('span', 'act-detail');
+      keys.forEach(function (k) { span.appendChild(wbEl('span', 'act-kv', k + '=' + d[k])); });
+      return span;
+    }
+    return wbEl('span', 'act-detail', String(d));
+  }
+
+  /**
+   * 折好的一行 ⇒ 卡片。
+   * kind: 'one'（一条真事，原样）｜'nav'（进出场景 ×N）｜'tool'（某个工具 ×N）
+   */
+  function renderGroup(r) {
+    var wrap = wbEl('div', 'act-group');
+    var row = wbEl('div', 'act-row' + (r.kind === 'tool' ? ' ai' : ''));
+    var timeTxt, actionTxt, extra = '';
+    if (r.kind === 'nav') {
+      timeTxt = r.last.time || wbLocalTime(r.last);
+      actionTxt = '进出场景';
+      extra = Object.keys(r.byAction).map(function (k) { return k + ' ' + r.byAction[k]; }).join(' · ');
+    } else if (r.kind === 'tool') {
+      var t1 = r.first.time || wbLocalTime(r.first);
+      var t2 = r.last.time || wbLocalTime(r.last);
+      timeTxt = r.count > 1 ? (t1 + '→' + t2) : t2;
+      actionTxt = r.action;
+    } else {
+      timeTxt = r.entry.time || wbLocalTime(r.entry);   // ⚠ 本地时间（不是 UTC）
+      actionTxt = r.entry.action;
+    }
+    row.appendChild(wbEl('span', 'act-time', timeTxt));
+    row.appendChild(wbEl('span', 'act-who', r.kind === 'tool' ? 'AI' : (r.kind === 'one' && r.entry.actor === 'system' ? '系统' : '人')));
+    row.appendChild(wbEl('span', 'act-action', actionTxt));
+    if (r.count > 1) row.appendChild(wbEl('span', 'act-count', '×' + r.count));
+    if (extra) row.appendChild(wbEl('span', 'act-target', extra));
+    else if (r.kind === 'one' && r.entry.target) row.appendChild(wbEl('span', 'act-target', r.entry.target));
+    var d = (r.kind === 'one') ? detailOf(r.entry.detail) : null;
+    if (d) row.appendChild(d);
+    wrap.appendChild(row);
+
+    if (r.kind !== 'one' && r.items && r.items.length) {
+      // 折起来的明细 ⇒ 点一下展开（原始记录一条没丢）
+      var box = wbEl('div', 'act-sub');
+      box.style.display = 'none';
+      r.items.slice().reverse().forEach(function (e) {
+        var line = wbEl('div', 'act-sub-line');
+        line.appendChild(wbEl('span', 'act-time', e.time || wbLocalTime(e)));
+        line.appendChild(wbEl('span', 'act-action', e.action));
+        if (e.target) line.appendChild(wbEl('span', 'act-target', String(e.target).slice(0, 90)));
+        box.appendChild(line);
+      });
+      row.classList.add('clickable');
+      row.title = '点开看这 ' + r.items.length + ' 条明细';
+      row.addEventListener('click', function () {
+        box.style.display = (box.style.display === 'none') ? '' : 'none';
+        row.classList.toggle('open', box.style.display !== 'none');
+      });
+      wrap.appendChild(box);
+    }
+    return wrap;
+  }
+
+  function render() {
+    list.innerHTML = '';
+    var shown = who === 'all' ? rows : rows.filter(function (e) { return e.actor === who; });
+    if (!shown.length) {
+      list.appendChild(wbEl('div', 'todo-empty', rows.length ? '这个筛选下没有记录' : '这个场景还没有留痕'));
+      return;
+    }
+    var groups = actBuildGroups(shown);
+    var nRows = 0;
+    groups.forEach(function (g) { nRows += g.rows.length; });
+    // 顶部：原始多少条 → 折成多少行（说清楚折掉了什么，别让人以为记录丢了）
+    foldNote.textContent = shown.length > nRows
+      ? ('原始 ' + shown.length + ' 条 → 折成 ' + nRows + ' 行（进出场景、AI 工具调用已折叠，点开看明细）')
+      : (shown.length + ' 条');
+    groups.forEach(function (g) {
+      list.appendChild(wbEl('div', 'act-day', g.day));
+      g.rows.forEach(function (r) { list.appendChild(renderGroup(r)); });
+    });
+  }
+
+  function load() {
+    wbApi('GET', '/api/actlog?scene=' + encodeURIComponent(sceneId) + '&limit=300&ai=1')
+      .then(function (r) {
+        if (!r || !r.ok) {
+          list.innerHTML = '';
+          list.appendChild(wbEl('div', 'todo-empty', (r && r.error) || '读不到留痕'));
+          return;
+        }
+        rows = r.entries || [];
+        summary = r.summary || null;
+        render();
+        if (onLoad) onLoad(rows.length, summary);
+      }).catch(function (e) {
+        list.innerHTML = '';
+        list.appendChild(wbEl('div', 'todo-empty', '读不到留痕：' + ((e && e.message) || e)));
+      });
+  }
+
+  renderFilters();
+  load();
+  refreshBtn.addEventListener('click', function () { load(); });
+  return { refresh: load, getRows: function () { return rows; }, getSummary: function () { return summary; } };
+}
+
+/* ── 2. memory：项目信息.md（分节）+ 身份卡 + 留痕 ───────────────── */
 PANELS.memory = function (body, meta, head) {
   var acts = wbHeadActs(head, meta.id);
   var scene = meta.scenario;
@@ -140,8 +414,33 @@ PANELS.memory = function (body, meta, head) {
   body.appendChild(tabs);
   body.appendChild(editBox);
   var cur = '§〇';
-  var curText = '';
+  var secs = {};             // 各节正文（load 时从 项目信息.md 解析出来）
+  var cardText = '';         // 身份卡正文
+  var drafts = {};           // 改过还没存的草稿（按页签存，切页签不丢）
   var health = null;
+  var dupNote = '';         // ⚠ 文件里有两段 §〇（只有最后一段算数）
+  var trail = null;          // 「留痕」页签里的那条时间线
+  var trailTimer = null;     // 停留在这个页签时的自动刷新
+
+  /**
+   * 这个页签该显示什么？
+   * ⚠ 踩过的坑：以前 curText 只在 load() 里算一次 ⇒ 切页签时显示的是**上一节**的正文，
+   *   在 §一 里点保存 ⇒ 把 §〇 的内容写进 §一（数据被改坏）。
+   *   现在：草稿优先，没有草稿才取磁盘上那一节的正文。
+   */
+  function textFor(key) {
+    if (Object.prototype.hasOwnProperty.call(drafts, key)) return drafts[key];
+    if (key === '身份卡') return cardText;
+    return secs[key] || '';
+  }
+
+  // 想直接落到「留痕」页签上（卡片里「打开场景看全部」那个按钮）⇒ 认一下
+  try {
+    if (window.__WB_MEM_TAB && window.__WB_MEM_TAB.scene === scene && window.__WB_MEM_TAB.tab) {
+      cur = String(window.__WB_MEM_TAB.tab);
+      window.__WB_MEM_TAB = null;
+    }
+  } catch (e) { /* 忽略 */ }
 
   function renderTabs() {
     tabs.innerHTML = '';
@@ -154,13 +453,35 @@ PANELS.memory = function (body, meta, head) {
     var card = wbEl('button', 'mem-tab' + (cur === '身份卡' ? ' active' : ''), '身份卡');
     card.addEventListener('click', function () { cur = '身份卡'; renderTabs(); renderBody(); });
     tabs.appendChild(card);
+    // ★ 留痕页签：这个场景里发生过的一切（人 + 服务端 + AI）都在这条时间线上
+    var log = wbEl('button', 'mem-tab' + (cur === '留痕' ? ' active' : ''), '留痕');
+    log.title = '这个场景里发生过的一切：谁 · 做了什么 · 动了哪一样东西';
+    log.addEventListener('click', function () { cur = '留痕'; renderTabs(); renderBody(); });
+    tabs.appendChild(log);
   }
 
   function renderBody() {
     editBox.innerHTML = '';
+    // 「留痕」页签：不是可编辑的正文 ⇒ 只画时间线，不给保存按钮
+    if (cur === '留痕') {
+      var box = wbEl('div', 'act-box act-in-mem');
+      editBox.appendChild(box);
+      trail = wbActlogView(box, scene, function (n, sum) {
+        acts.diag.textContent = n + ' 条 · 今 ' + ((sum && sum.today) || 0);
+      });
+      // 停留在这个页签时自己刷新（切走就停）
+      if (trailTimer) { clearInterval(trailTimer); trailTimer = null; }
+      trailTimer = setInterval(function () {
+        if (cur !== '留痕') { clearInterval(trailTimer); trailTimer = null; return; }
+        trail.refresh();
+      }, 12000);
+      return;
+    }
+    if (trailTimer) { clearInterval(trailTimer); trailTimer = null; }
     var ta = wbEl('textarea', 'note-area');
-    ta.value = curText;
+    ta.value = textFor(cur);
     ta.spellcheck = false;
+    ta.addEventListener('input', function () { drafts[cur] = ta.value; });
     editBox.appendChild(ta);
 
     var bar = wbEl('div', 'mem-bar');
@@ -171,12 +492,16 @@ PANELS.memory = function (body, meta, head) {
         + '　主文件 ' + Math.round((health.bytes || 0) / 1024 * 10) / 10 + 'K / 25K'));
       if (health.problems.length) bar.appendChild(wbEl('span', 'mem-prob', '⚠ ' + health.problems.join('；')));
     }
+    // ⚠ 前端自己再数一遍（服务端那版要等引擎重启才生效）：
+    //   文件里有两段 §〇 ⇒ 前面那段是死字，面板只认最后一段。
+    if (dupNote) bar.appendChild(el('span', 'mem-prob', '⚠ ' + dupNote));
     var save = wbEl('button', 'panel-btn solid', '保存');
     save.addEventListener('click', function () {
+      var key = cur;                       // 点保存时锁定是哪一节（别被切页签带跑）
       var body2 = { scene: scene, text: ta.value };
-      if (cur === '身份卡') body2.card = true; else body2.section = cur;
+      if (key === '身份卡') body2.card = true; else body2.section = key;
       wbApi('POST', '/api/memory', body2).then(function (r) {
-        if (r && r.ok) { health = r.health; wbToast('已存'); load(); }
+        if (r && r.ok) { health = r.health; delete drafts[key]; wbToast('已存'); load(); }
         else wbToast('没存成', true);
       });
     });
@@ -189,7 +514,11 @@ PANELS.memory = function (body, meta, head) {
       if (!r || !r.ok) return;
       health = r.health;
       var text = r.main || '';
-      var secs = {};
+      // ⚠ 有两段 §〇 ⇒ 前面那段是死字（面板只认最后一段）
+      //   ⚠ 别用 \b：§〇 不是 ASCII 词字符，\b 在它后面不成立（会一个都匹配不到）。
+      var dup = (text.match(/^##\s*§〇(?![〇一二三四五六七八九十])/gm) || []).length;
+      dupNote = dup > 1 ? ('文件里有 ' + dup + ' 段 §〇（只有最后一段算数）· 修：node dev/去重交接.mjs') : '';
+      secs = {};
       var re = /^##\s*(§[〇一二三四五六七八九十]+)\s*(.*)$/gm;
       var m, keys = [];
       while ((m = re.exec(text))) keys.push({ key: m[1], title: m[2], start: m.index, bodyStart: re.lastIndex });
@@ -197,13 +526,13 @@ PANELS.memory = function (body, meta, head) {
         var end = i + 1 < keys.length ? keys[i + 1].start : text.length;
         secs[keys[i].key] = text.slice(keys[i].bodyStart, end).replace(/^\n+/, '').replace(/\n+$/, '');
       }
-      curText = cur === '身份卡' ? (r.card || '') : (secs[cur] || '');
+      cardText = r.card || '';
       renderTabs();
       renderBody();
     });
   }
   load();
-  return function () { /* noop */ };
+  return function () { if (trailTimer) { clearInterval(trailTimer); trailTimer = null; } };
 };
 
 /* ── 2b. note：便签（写在场景自己的 项目记忆/ 下） ───────────────── */
@@ -1292,12 +1621,14 @@ PANELS.bookshelf = function (body, meta, head) {
     wbApi('GET', '/api/vault/note?scene=' + encodeURIComponent(sceneId) + '&path=' + encodeURIComponent(b.path))
       .then(function (r) {
         if (!r || !r.ok) { wbToast('读不到：' + (r && r.error), true); return; }
+        wbAct(sceneId, '打开书', b.title, { 路径: b.path, 进度: (b.currentPage || 0) + '/' + (b.totalPage || '?') });
         reader.innerHTML = '';
         reader.style.display = '';
         list.style.display = 'none';            // 读书视图接管
         var head2 = wbEl('div', 'shelf-reader-head');
         var back = wbEl('button', 'chip', '← 书架');
         back.addEventListener('click', function () {
+          wbAct(sceneId, '返回书架', b.title);
           reader.style.display = 'none';
           reader.innerHTML = '';
           list.style.display = '';               // 回书架
@@ -1531,6 +1862,7 @@ PANELS.notes = function (body, meta, head) {
     wbApi('GET', '/api/vault/note?scene=' + encodeURIComponent(sceneId) + '&path=' + encodeURIComponent(n.path))
       .then(function (r) {
         if (!r || !r.ok) { wbToast('读不到：' + (r && r.error), true); return; }
+        wbAct(sceneId, '打开条目', n.title || n.file, { 路径: n.path });
         reader.innerHTML = '';
         reader.style.display = '';
         list.style.display = 'none';
@@ -1790,7 +2122,11 @@ PANELS.health = function (body, meta, head) {
   body.appendChild(box);
   function load() {
     wbApi('GET', '/api/doctor').then(function (r) {
-      if (!r || !r.ok) { box.textContent = '体检跑不了'; return; }
+      // ⚠ 判据看**报告在不在**，不看 r.ok ——
+      //   r.ok 的意思是「所有项都绿」，只要有一项红它就是 false。
+      //   早先这里判的是 !r.ok ⇒ 只要有一项红，面板就只显示「体检跑不了」，
+      //   24 项报告全被吞掉 —— 想看体检的人恰恰看不到是哪一项坏了。
+      if (!r || !r.report || !Array.isArray(r.report.rows)) { box.textContent = '体检跑不了'; return; }
       var rows = r.report.rows || [];
       box.innerHTML = '';
       var mine = rows.filter(function (x) { return x.name.indexOf('会话绑定') >= 0 || x.name.indexOf('记忆') >= 0; });
@@ -1803,10 +2139,33 @@ PANELS.health = function (body, meta, head) {
       var bad = rows.filter(function (x) { return !x.ok; }).length;
       acts.diag.textContent = rows.length + ' 项 · ' + (bad ? bad + ' 项要修' : '全绿');
       void mine;
+    }).catch(function (e) {
+      box.innerHTML = '';
+      box.appendChild(wbEl('div', 'todo-empty', '体检跑不了：' + ((e && e.message) || e)));
     });
   }
   load();
   var timer = setInterval(load, 20000);
+  return function () { clearInterval(timer); };
+};
+
+/* ── 21. actlog：操作留痕（这个场景里发生过的一切） ──────────────────
+ *
+ * 一条时间线：**人**在界面上的动作 + **服务端**改动过的东西 + **AI** 的工具调用。
+ * 数据来自 GET /api/actlog?scene=<id>&ai=1（判据在 lib/actlog.mjs）。
+ *
+ * ⚠ 留痕的主场是**项目信息面板里的「留痕」页签**（wbActlogView 是同一份实现）——
+ *   这里保留一个独立面板类型，想单独摆一面墙的时候用。
+ */
+PANELS.actlog = function (body, meta, head) {
+  var acts = wbHeadActs(head, meta.id);
+  var sceneId = meta.scene || meta.scenario || '';
+  var box = wbEl('div', 'act-box');
+  body.appendChild(box);
+  var view = wbActlogView(box, sceneId, function (n, sum) {
+    acts.diag.textContent = n + ' 条 · 今 ' + ((sum && sum.today) || 0);
+  });
+  var timer = setInterval(function () { view.refresh(); }, 12000);
   return function () { clearInterval(timer); };
 };
 
