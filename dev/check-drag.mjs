@@ -17,6 +17,31 @@ const argv = process.argv.slice(2);
 const val = (k, d) => { const i = argv.indexOf(k); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
 const URL_ = 'http://127.0.0.1:3080/';
 const PORT = Number(val('--cdp', 9360));
+// ⚠ 路径基于脚本自己算 ⇒ 从哪个目录跑都对（原来靠 process.cwd()）。
+const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+// ⚠ 拖拽会改写 data/scene-order.json ⇒ 收尾时**原样写回**，别把用户的顺序搅乱
+const ORDER_FILE = path.join(ROOT, 'data', 'scene-order.json');
+let ORDER_RAW = null;
+try { ORDER_RAW = fs.readFileSync(ORDER_FILE, 'utf8'); } catch (e) { /* ignore */ }
+/* 角色归属也一起兜住：落点是按像素算的，万一 CSS 变了、落点翻到下半区 ⇒
+ * 拖拽会变成「加入那个分类」⇒ 角色的 category 就被改了。
+ * 所以不只还原顺序，归属也按快照写回。 */
+let SNAP_CATS = {};      // 场景 id → 分类
+const apiPath = (u, body) => fetch('http://127.0.0.1:3080/workbench' + u, {
+  method: body ? 'POST' : 'GET',
+  headers: { ...(body ? { 'content-type': 'application/json' } : {}), cookie: cookie() },
+  body: body ? JSON.stringify(body) : undefined,
+});
+async function takeSnapshot() {
+  const r = await (await apiPath('/api/scenes')).json();
+  (r.scenes || []).forEach((x) => { SNAP_CATS[x.id] = x.category; });
+}
+async function restoreSnapshot() {
+  for (const id of Object.keys(SNAP_CATS)) {
+    try { await apiPath('/api/scene/category', { id, category: SNAP_CATS[id] }); } catch (e) { /* ignore */ }
+  }
+  try { if (ORDER_RAW !== null) fs.writeFileSync(ORDER_FILE, ORDER_RAW); } catch (e) { /* ignore */ }
+}
 
 const CHROME = [
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -37,7 +62,7 @@ const chrome = spawn(CHROME, [
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const cookie = () => {
-  try { return JSON.parse(fs.readFileSync(path.join(process.cwd(), 'data', 'engine-cookie.json'), 'utf8')).cookie || ''; }
+  try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'engine-cookie.json'), 'utf8')).cookie || ''; }
   catch (e) { return ''; }
 };
 
@@ -131,11 +156,12 @@ try {
   })()`);
   await sleep(4000);
 
+  await takeSnapshot();          // ⚠ 拍在第一次拖拽之前
   console.log('① 拖之前的顺序：');
   const before = await cdp.eval(treeOrder);
   (before || []).forEach((x, i) => console.log('   ' + (i + 1) + '. ' + x));
 
-  // 拖：把第一个角色拖到最后一个角色的后面
+  // 拖：把第一个角色拖到**最后一个分类的标题下半区** ⇒ 加入那个分类（归属跟着变）
   //
   // ⚠ 为什么不用 CDP 的鼠标事件：headless Chrome 起不了原生 HTML5 拖放
   //   （dragstart 不触发）。所以这里**在页面里派发真实的 DragEvent**，
@@ -159,10 +185,15 @@ try {
     if (!src || !bh) return 'no-leaf';
     var dt = new DataTransfer();
     var r = bh.getBoundingClientRect();
+    // ⚠ 落点必须在分类标题的**下半区**（app.js 的规则）：
+    //   上半区 = 排在这个分类前面（只换顺序，归属不变）
+    //   下半区 = 加入这个分类（改归属）
+    // 之前落在上半区 ⇒ 归属没变 ⇒ 树是按分类分组的，看起来完全没动 ⇒ 断言误报。
+    var dropY = r.top + r.height * 0.85;
     src.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: dt }));
-    bh.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt, clientX: r.left + 20, clientY: r.top + 5 }));
+    bh.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt, clientX: r.left + 20, clientY: dropY }));
     var marked = bh.className;
-    bh.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt, clientX: r.left + 20, clientY: r.top + 5 }));
+    bh.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt, clientX: r.left + 20, clientY: dropY }));
     src.dispatchEvent(new DragEvent('dragend', { bubbles: true, cancelable: true, dataTransfer: dt }));
     return 'dispatched; 落点标记=' + marked;
   })()`);
@@ -180,7 +211,7 @@ try {
   console.log('④ 存下来了？');
   const order = await (await fetch('http://127.0.0.1:3080/workbench/api/scenes', { headers: { cookie: cookie() } })).json();
   console.log('   /api/scenes 返回的顺序：' + (order.scenes || []).map((x) => x.name).join(' → '));
-  const saved = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'data', 'scene-order.json'), 'utf8'));
+  const saved = JSON.parse(fs.readFileSync(ORDER_FILE, 'utf8'));
   console.log('   data/scene-order.json：' + (saved.ids || []).join(' → '));
 
   console.log('');
@@ -189,6 +220,8 @@ try {
   console.error('失败：' + e.message);
   process.exitCode = 1;
 } finally {
+  // ⚠ 还原：拖拽把 data/scene-order.json 改了（归属也可能被改）⇒ 按快照原样写回
+  try { await restoreSnapshot(); } catch (e) { /* ignore */ }
   try { chrome.kill(); } catch (e) { /* ignore */ }
   try { fs.rmSync(profile, { recursive: true, force: true }); } catch (e) { /* ignore */ }
 }

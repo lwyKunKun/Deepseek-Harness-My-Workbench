@@ -194,6 +194,8 @@ try {
   console.error('失败：' + e.message);
   process.exitCode = 1;
 } finally {
+  // ⚠ 安全网：测试建的临时场景没删干净（中途崩了）⇒ 收尾时补一刀，别给用户留垃圾场景
+  try { await api('POST', '/api/scenes/delete', { id: TMP_ID }); } catch (e) { /* ignore */ }
   try { chrome.kill(); } catch (e) { /* ignore */ }
   try { fs.rmSync(profile, { recursive: true, force: true }); } catch (e) { /* ignore */ }
 }

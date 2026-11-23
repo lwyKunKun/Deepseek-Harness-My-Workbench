@@ -16,7 +16,32 @@ import path from 'node:path';
 const argv = process.argv.slice(2);
 const val = (k, d) => { const i = argv.indexOf(k); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
 const URL_ = 'http://127.0.0.1:3080/';
-const PORT = Number(val('--cdp', 9410));
+const PORT = Number(val('--cdp', 9413));
+// ⚠ 路径基于脚本自己算 ⇒ 从哪个目录跑都对（原来靠 process.cwd()）。
+const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+// ⚠ 拖拽会改写 data/scene-order.json ⇒ 收尾时**原样写回**，别把用户的顺序搅乱
+const ORDER_FILE = path.join(ROOT, 'data', 'scene-order.json');
+let ORDER_RAW = null;
+try { ORDER_RAW = fs.readFileSync(ORDER_FILE, 'utf8'); } catch (e) { /* ignore */ }
+/* 角色归属也一起兜住：落点是按像素算的，万一 CSS 变了、落点翻到上半区 ⇒
+ * 拖拽会变成「排到那个分类前面」（仍不改归属）或别的模式 ⇒ 归属可能被改。
+ * 所以不只还原顺序，归属也按快照写回。 */
+let SNAP_CATS = {};      // 场景 id → 分类
+const apiPath = (u, body) => fetch('http://127.0.0.1:3080/workbench' + u, {
+  method: body ? 'POST' : 'GET',
+  headers: { ...(body ? { 'content-type': 'application/json' } : {}), cookie: cookie() },
+  body: body ? JSON.stringify(body) : undefined,
+});
+async function takeSnapshot() {
+  const r = await (await apiPath('/api/scenes')).json();
+  (r.scenes || []).forEach((x) => { SNAP_CATS[x.id] = x.category; });
+}
+async function restoreSnapshot() {
+  for (const id of Object.keys(SNAP_CATS)) {
+    try { await apiPath('/api/scene/category', { id, category: SNAP_CATS[id] }); } catch (e) { /* ignore */ }
+  }
+  try { if (ORDER_RAW !== null) fs.writeFileSync(ORDER_FILE, ORDER_RAW); } catch (e) { /* ignore */ }
+}
 
 const CHROME = [
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -37,7 +62,7 @@ const chrome = spawn(CHROME, [
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const cookie = () => {
-  try { return JSON.parse(fs.readFileSync(path.join(process.cwd(), 'data', 'engine-cookie.json'), 'utf8')).cookie || ''; }
+  try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'engine-cookie.json'), 'utf8')).cookie || ''; }
   catch (e) { return ''; }
 };
 
@@ -168,6 +193,7 @@ try {
   console.log('   ' + JSON.stringify(chatInfo));
 
   console.log('');
+  await takeSnapshot();          // ⚠ 拍在第一次拖拽之前
   console.log('④ 拖一个场景 ⇒ 顺序变了并存下来');
   const before = await (await fetch('http://127.0.0.1:3080/workbench/api/scenes', { headers: { cookie: cookie() } })).json();
   const beforeIds = (before.scenes || []).map((x) => x.id);
@@ -179,9 +205,9 @@ try {
     var dt = new DataTransfer();
     var r = dst.getBoundingClientRect();
     src.dispatchEvent(new DragEvent('dragstart', { bubbles:true, cancelable:true, dataTransfer: dt }));
-    dst.dispatchEvent(new DragEvent('dragover', { bubbles:true, cancelable:true, dataTransfer: dt, clientX:r.left+10, clientY:r.bottom-2 }));
+    dst.dispatchEvent(new DragEvent('dragover', { bubbles:true, cancelable:true, dataTransfer: dt, clientX:r.left+10, clientY:r.top + r.height * 0.85 }));
     var marked = dst.className.indexOf('drop-after') >= 0 ? 'drop-after' : (dst.className.indexOf('drop-before') >= 0 ? 'drop-before' : '?');
-    dst.dispatchEvent(new DragEvent('drop', { bubbles:true, cancelable:true, dataTransfer: dt, clientX:r.left+10, clientY:r.bottom-2 }));
+    dst.dispatchEvent(new DragEvent('drop', { bubbles:true, cancelable:true, dataTransfer: dt, clientX:r.left+10, clientY:r.top + r.height * 0.85 }));
     src.dispatchEvent(new DragEvent('dragend', { bubbles:true, cancelable:true, dataTransfer: dt }));
     return src.getAttribute('data-sc-id') + ' → ' + dst.getAttribute('data-sc-id') + '（落点 ' + marked + '）';
   })()`);
@@ -192,14 +218,14 @@ try {
   console.log('   之前：' + beforeIds.join(' → '));
   console.log('   之后：' + afterIds.join(' → '));
   console.log('   顺序变了？' + (JSON.stringify(beforeIds) !== JSON.stringify(afterIds) ? '✓ 变了' : '❌ 没变'));
-  const saved = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'data', 'scene-order.json'), 'utf8'));
+  const saved = JSON.parse(fs.readFileSync(ORDER_FILE, 'utf8'));
   console.log('   存下来了：' + (saved.ids || []).join(' → '));
 
   console.log('');
   console.log('控制台报错：' + (cdp.errors.length ? '\n  ' + cdp.errors.slice(0, 4).join('\n  ') : '无'));
 
   await cdp.send('Page.captureScreenshot', { format: 'png' }).then((r) => {
-    const p = path.join(process.cwd(), 'data', 'menu.png');
+    const p = path.join(ROOT, 'data', 'menu.png');
     fs.writeFileSync(p, Buffer.from(r.data, 'base64'));
     console.log('截图：data/menu.png');
   }).catch(() => {});
@@ -207,6 +233,8 @@ try {
   console.error('失败：' + e.message);
   process.exitCode = 1;
 } finally {
+  // ⚠ 还原：拖拽把 data/scene-order.json 改了（归属也可能被改）⇒ 按快照原样写回
+  try { await restoreSnapshot(); } catch (e) { /* ignore */ }
   try { chrome.kill(); } catch (e) { /* ignore */ }
   try { fs.rmSync(profile, { recursive: true, force: true }); } catch (e) { /* ignore */ }
 }

@@ -8,6 +8,26 @@ import os from 'node:os';
 import path from 'node:path';
 
 const PORT = 9430;
+// ⚠ 路径基于脚本自己算 ⇒ 从哪个目录跑都对（原来靠相对路径）。
+const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+// ⚠ 拖拽会改写 data/scene-order.json ⇒ 收尾时**原样写回**，别把用户的顺序搅乱
+const ORDER_FILE = path.join(ROOT, 'data', 'scene-order.json');
+let ORDER_RAW = null;
+try { ORDER_RAW = fs.readFileSync(ORDER_FILE, 'utf8'); } catch (e) { /* ignore */ }
+/* 角色归属也一起兜住：落点是按像素算的，万一 CSS 变了、落点翻到下半区 ⇒
+ * 拖拽会变成「加入那个分类」⇒ 角色的 category 就被改了。
+ * 所以不只还原顺序，归属也按快照写回。 */
+let SNAP_CATS = {};      // 场景 id → 分类
+async function takeSnapshot() {
+  const r = await api('GET', '/api/scenes');
+  (r.scenes || []).forEach((x) => { SNAP_CATS[x.id] = x.category; });
+}
+async function restoreSnapshot() {
+  for (const id of Object.keys(SNAP_CATS)) {
+    try { await api('POST', '/api/scene/category', { id, category: SNAP_CATS[id] }); } catch (e) { /* ignore */ }
+  }
+  try { if (ORDER_RAW !== null) fs.writeFileSync(ORDER_FILE, ORDER_RAW); } catch (e) { /* ignore */ }
+}
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-cd-'));
 const CHROME = ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   '/Applications/Chromium.app/Contents/MacOS/Chromium'].find((p) => fs.existsSync(p));
@@ -17,7 +37,7 @@ const chrome = spawn(CHROME, ['--headless=new', '--disable-gpu', '--no-sandbox',
   '--user-data-dir=' + profile, '--window-size=1600,1000', 'about:blank'],
   { stdio: ['ignore', 'ignore', 'ignore'] });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const cookie = () => { try { return JSON.parse(fs.readFileSync('data/engine-cookie.json', 'utf8')).cookie || ''; } catch (e) { return ''; } };
+const cookie = () => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'engine-cookie.json'), 'utf8')).cookie || ''; } catch (e) { return ''; } };
 const api = async (m, u, b) => {
   const r = await fetch('http://127.0.0.1:3080/workbench' + u, {
     method: m, headers: { ...(b ? { 'content-type': 'application/json' } : {}), cookie: cookie() },
@@ -84,6 +104,7 @@ try {
   const dstCat = withMembers[0].split('|')[0];
   console.log('');
   console.log('把一个角色拖到分类「' + dstCat + '」上面（drop-before ⇒ 换顺序，不改归属）');
+  await takeSnapshot();          // ⚠ 拍在第一次拖拽之前
 
   const info = await cdp.eval(`(function(){
     var host=${HOST};
@@ -104,9 +125,9 @@ try {
     var dt = new DataTransfer();
     var r = dst.getBoundingClientRect();
     src.dispatchEvent(new DragEvent('dragstart', { bubbles:true, cancelable:true, dataTransfer: dt }));
-    dst.dispatchEvent(new DragEvent('dragover', { bubbles:true, cancelable:true, dataTransfer: dt, clientX:r.left+10, clientY:r.top+2 }));
+    dst.dispatchEvent(new DragEvent('dragover', { bubbles:true, cancelable:true, dataTransfer: dt, clientX:r.left+10, clientY:r.top + r.height * 0.15 }));
     var marked = dst.className;
-    dst.dispatchEvent(new DragEvent('drop', { bubbles:true, cancelable:true, dataTransfer: dt, clientX:r.left+10, clientY:r.top+2 }));
+    dst.dispatchEvent(new DragEvent('drop', { bubbles:true, cancelable:true, dataTransfer: dt, clientX:r.left+10, clientY:r.top + r.height * 0.15 }));
     src.dispatchEvent(new DragEvent('dragend', { bubbles:true, cancelable:true, dataTransfer: dt }));
     return '拖的是角色 ' + srcId + ' → 落点 class=' + marked;
   })()`);
@@ -120,6 +141,8 @@ try {
   console.error('失败：' + e.message);
   process.exitCode = 1;
 } finally {
+  // ⚠ 还原：拖拽把 data/scene-order.json 改了（归属也可能被改）⇒ 按快照原样写回
+  try { await restoreSnapshot(); } catch (e) { /* ignore */ }
   try { chrome.kill(); } catch (e) {}
   try { fs.rmSync(profile, { recursive: true, force: true }); } catch (e) {}
 }
