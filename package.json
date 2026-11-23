@@ -4,19 +4,19 @@
   "private": true,
   "type": "module",
   "description": "我的定制工作台 —— 嵌在 DeepSeek Harness 界面里的多场景工作台（角色卡片目录 / 派单闭环 / 权限分档 / 体检）",
-  "main": "index.js",
+  "main": "backend/index.js",
   "exports": {
-    ".": "./index.js",
-    "./client": "./client.js",
-    "./locale/*.json": "./locale/*.json",
-    "./icon": "./icon.svg"
+    ".": "./backend/index.js",
+    "./client": "./frontend/client.js",
+    "./locale/*.json": "./frontend/locale/*.json",
+    "./icon": "./frontend/icon.svg"
   },
   "files": [
-    "index.js",
-    "client.js",
+    "backend/index.js",
+    "frontend/client.js",
     "cordis.patch.yml",
-    "locale/*.json",
-    "icon.svg"
+    "frontend/locale/*.json",
+    "frontend/icon.svg"
   ],
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
@@ -31,7 +31,7 @@
     }
   },
   "scripts": {
-    "start": "node server.mjs"
+    "start": "node backend/server.mjs"
   },
   "engines": {
     "node": ">=22"

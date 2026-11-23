@@ -9,18 +9,19 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
+// 目录布局：backend/ = Node 宿主端（服务、lib、场景、记忆、数据），frontend/ = 浏览器端（web、client.js）
 export const ROOT = process.env.WB_ROOT
   ? path.resolve(process.env.WB_ROOT)
-  : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 export const PATHS = {
   root: ROOT,
-  web: path.join(ROOT, 'web'),
-  scenarios: path.join(ROOT, 'scenarios'),
-  memory: path.join(ROOT, 'memory'),
-  data: path.join(ROOT, 'data'),
-  scripts: path.join(ROOT, 'scripts'),   // 面向人的命令行（保留但不是主入口）
-  tools: path.join(ROOT, 'tools'),       // ★ 给 AI 用的工具（场景里的 AI 会调它们）
+  web: path.join(ROOT, 'frontend', 'web'),
+  scenarios: path.join(ROOT, 'backend', 'scenarios'),
+  memory: path.join(ROOT, 'backend', 'memory'),
+  data: path.join(ROOT, 'backend', 'data'),
+  scripts: path.join(ROOT, 'backend', 'scripts'),   // 面向人的命令行（保留但不是主入口）
+  tools: path.join(ROOT, 'backend', 'tools'),       // ★ 给 AI 用的工具（场景里的 AI 会调它们）
 };
 
 /** DSH 引擎（本地 HTTP 服务）。host/port 从 base 推导，别写死。 */

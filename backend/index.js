@@ -32,10 +32,10 @@ function resolveRoot(config) {
   if (config && config.root) candidates.push(String(config.root));
   if (process.env.WB_ROOT) candidates.push(String(process.env.WB_ROOT));
   candidates.push(path.join(process.cwd(), 'workbench'));
-  candidates.push(HERE);
+  candidates.push(path.resolve(HERE, '..'));
   for (const c of candidates) {
     const abs = path.resolve(c);
-    if (fs.existsSync(path.join(abs, 'server.mjs'))) return abs;
+    if (fs.existsSync(path.join(abs, 'backend', 'server.mjs'))) return abs;
   }
   return path.resolve(candidates[0]);
 }
@@ -55,8 +55,8 @@ function loadWorkbench(root) {
   const stamp = '?wb=' + loadSeq + '-' + Date.now();
   return (async () => {
     process.env.WB_ROOT = root;
-    const cfg = await import(pathToFileURL(path.join(root, 'lib', 'config.mjs')).href);
-    const srv = await import(pathToFileURL(path.join(root, 'server.mjs')).href + stamp);
+    const cfg = await import(pathToFileURL(path.join(root, 'backend', 'lib', 'config.mjs')).href);
+    const srv = await import(pathToFileURL(path.join(root, 'backend', 'server.mjs')).href + stamp);
     return { cfg, srv };
   })();
 }

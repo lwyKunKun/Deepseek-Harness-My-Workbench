@@ -90,10 +90,10 @@ export function registerScene(id, info = {}) {
   t.scenes = t.scenes || {};
   t.assets = t.assets || {};
   const old = t.scenes[sceneId] || {};
-  const others = Object.keys(t.scenes).filter((k) => k !== sceneId).map((k) => 'memory/' + k + '/');
+  const others = Object.keys(t.scenes).filter((k) => k !== sceneId).map((k) => 'backend/memory/' + k + '/');
   const base = (old.territory && old.territory.length)
     ? old.territory.slice()
-    : ['scenarios/' + sceneId + '.json', 'memory/' + sceneId + '/', 'skills/' + sceneId + '/'];
+    : ['backend/scenarios/' + sceneId + '.json', 'backend/memory/' + sceneId + '/', 'backend/skills/' + sceneId + '/'];
   // ★ 项目目录：这个角色在**真实磁盘上的地盘**（绝对路径）——
   //   绑了就归它，别人碰它就是越界（E 档）；解绑就把这条摘掉。
   //   （绝对路径的条目 = 项目目录；相对路径的 = 工作台内的地盘。）
@@ -106,11 +106,11 @@ export function registerScene(id, info = {}) {
     name: info.name || old.name || sceneId,
     territory: kept,
     notTouch: others.length ? others : old.notTouch || [],
-    writeBack: old.writeBack || ('memory/' + sceneId + '/项目信息.md 的 §〇'),
+    writeBack: old.writeBack || ('backend/memory/' + sceneId + '/项目信息.md 的 §〇'),
     duty: info.duty || old.duty || '',
     ...(projectRoot ? { projectRoot } : {}),
   };
-  t.assets['scenarios/' + sceneId + '.json'] = sceneId;
+  t.assets['backend/scenarios/' + sceneId + '.json'] = sceneId;
   saveTerritory(t);
   return { ok: true, scene: t.scenes[sceneId] };
 }
@@ -303,7 +303,7 @@ function checkBoardRow(rel, me, opts) {
   const oldString = String(opts.oldString || '');
 
   // ① 回执目录：**谁派的单，谁写回执** —— 这条可以精确判定，不用猜
-  if (rel.indexOf('memory/_共享记忆/_回执/') === 0) {
+  if (rel.indexOf('backend/memory/_共享记忆/_回执/') === 0) {
     const hash = rel.split('/').pop().replace(/\.md$/, '');
     const line = findLedgerLine(hash);
     if (!line) {

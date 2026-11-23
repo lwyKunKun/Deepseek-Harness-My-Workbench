@@ -552,7 +552,7 @@ function buildIndexRows() {
       kind: '场景',
       key: sc.id,
       name: sc.name,
-      where: 'memory/' + sc.id + '/',
+      where: 'backend/memory/' + sc.id + '/',
       size: h.bytes,
       note: (sc.duty || sc.description || '') + (h.problems.length ? '　⚠ ' + h.problems.join('；') : ''),
     });
@@ -568,7 +568,7 @@ function buildIndexRows() {
           kind: scene.startsWith('_') ? '共享' : '资产',
           key: scene + '/' + f,
           name: f,
-          where: 'memory/' + scene + '/' + f,
+          where: 'backend/memory/' + scene + '/' + f,
           size: fs.statSync(full).size,
           note: '',
         });
@@ -584,7 +584,7 @@ async function deliverDispatch(rec, cookie) {
   if (!scene) return { error: '没有这个场景：' + rec.to + '（按 id 和名字都找过了）' };
   const panel = (scene.panels || []).find((p) => p.type === 'harness' && p.sessionId);
   if (!panel) {
-    return { error: '场景「' + rec.to + '」没有绑定会话的 AI 面板 —— 先给它建一条会话并钉上（scenarios/' + rec.to + '.json）' };
+    return { error: '场景「' + rec.to + '」没有绑定会话的 AI 面板 —— 先给它建一条会话并钉上（backend/scenarios/' + rec.to + '.json）' };
   }
   const ackFile = dispatch.ackPath(rec.hash);
   const prompt = [
@@ -602,11 +602,11 @@ async function deliverDispatch(rec, cookie) {
     '末行写【结束】。',
     '',
     '⛔ 地盘（只写这三处，别的一律不碰）：',
-    '   ① memory/' + rec.to + '/  —— 你自己场景的记忆',
+    '   ① backend/memory/' + rec.to + '/  —— 你自己场景的记忆',
     '   ② ' + ackFile,
-    '   ③ memory/_共享记忆/_跨场景通知.md（看板）',
+    '   ③ backend/memory/_共享记忆/_跨场景通知.md（看板）',
     '   别的场景的记忆目录：⛔ 一个字都不许写（那是别人的地盘，写了会污染对方的判断）。',
-    '   规矩与工具（memory/_共享记忆/*.md、lib/、dev/）是 A/C 档 ⇒ 只有规则负责人能改。',
+    '   规矩与工具（backend/memory/_共享记忆/*.md、backend/lib/、backend/dev/）是 A/C 档 ⇒ 只有规则负责人能改。',
     '   要改别人的东西 ⇒ 只能提请求（一次派单），别自己动手。',
     '   改之前可以先判一次（会告诉你能不能动、归谁）：',
     '   curl -s "http://127.0.0.1:3081/api/authority/check?path=<路径>&scene=' + rec.to + '"',

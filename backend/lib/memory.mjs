@@ -416,12 +416,12 @@ export function scaffold(scene, opts = {}) {
       '- 职责：' + duty,
       '',
       '## 我的地盘',
-      '- 能写：memory/' + scene + '/',
+      '- 能写：backend/memory/' + scene + '/',
       '- ⛔ 不写：别的场景的目录',
       '',
       '## 我的专属',
       '- 技能：' + skillsLine,
-      '- 记忆：memory/' + scene + '/' + MAIN_FILE + '（§〇 开场读）',
+      '- 记忆：backend/memory/' + scene + '/' + MAIN_FILE + '（§〇 开场读）',
       '',
     ].join('\n'), 'utf8');
   }

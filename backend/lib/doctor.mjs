@@ -183,8 +183,8 @@ export async function doctor() {
 
     // 五档各判一次，确认判据真的分得开
     const ownerId = authority.resolveSceneId(t.ruleOwner || 'command');
-    const own = authority.check('memory/' + ownerId + '/定位卡.md', ownerId);
-    const other = authority.check('memory/research/场景私有记忆.md', t.ruleOwner || 'command');
+    const own = authority.check('backend/memory/' + ownerId + '/定位卡.md', ownerId);
+    const other = authority.check('backend/memory/research/场景私有记忆.md', t.ruleOwner || 'command');
     const rule = authority.check((t.rules || [])[0] || 'territory.json', 'research');
     const tool = authority.check('lib/authority.mjs', 'research');
     const tiers = new Set([own.tier, other.tier, rule.tier, tool.tier]);

@@ -5,7 +5,7 @@
 #   所以这里只需要把引擎起起来，然后打开 DSH 界面，
 #   左边侧栏点「工作台」就是工作台本身。
 #
-# 想单独开一个页面（独立模式）再跑：node server.mjs
+# 想单独开一个页面（独立模式）再跑：node backend/server.mjs
 
 cd "$(dirname "$0")" || exit 1
 
@@ -15,7 +15,7 @@ ENGINE_BASE="http://127.0.0.1:${ENGINE_PORT}"
 say() { printf '\033[36m%s\033[0m\n' "$*"; }
 die() { printf '\033[31m✗ %s\033[0m\n' "$*"; exit 1; }
 
-mkdir -p data
+mkdir -p backend/data
 
 # ── 引擎在不在 ───────────────────────────────────────────────
 if curl -s -m 2 -o /dev/null "$ENGINE_BASE/"; then
@@ -23,11 +23,11 @@ if curl -s -m 2 -o /dev/null "$ENGINE_BASE/"; then
 else
   say "引擎没在跑，尝试启动…"
   if command -v dsh >/dev/null 2>&1; then
-    (dsh web --no-open --port "$ENGINE_PORT" > data/engine.log 2>&1 &)
+    (dsh web --no-open --port "$ENGINE_PORT" > backend/data/engine.log 2>&1 &)
     for i in $(seq 1 30); do
       sleep 1
       if curl -s -m 2 -o /dev/null "$ENGINE_BASE/"; then
-        say "✓ 引擎起来了（日志：data/engine.log）"
+        say "✓ 引擎起来了（日志：backend/data/engine.log）"
         break
       fi
     done
