@@ -25,7 +25,7 @@ const ROOT = process.cwd();
 
 // 自检用的角色（它的卡会被改一下再改回来）
 const SCENE = val('--scene', 'work');
-const SCENE_NAME = '总项目';
+const SCENE_NAME = val('--scene-name', '示例角色');
 const MARK = '自检：改过的职责';
 const SHOT = val('--shot', path.join(process.cwd(), 'data', 'card-sync.png'));
 

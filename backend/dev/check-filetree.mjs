@@ -4,8 +4,8 @@
 // 判据（计划里的验收标准，六条）：
 //   ① 角色视图里左树**只有角色**，没有文件树 —— 角色和目录不再同屏同名同图标
 //   ② 项目视图能列出项目根，且**角色归属正确**
-//      （总项目 → …/project/总项目；校区端 → …/project/总项目/campus-app）
-//   ③ **父子嵌套正确** —— campus-app 挂在 总项目 下面，不是并列
+//      （父项目 → …/projects/demo-parent；子端 → …/projects/demo-parent/sub-app）
+//   ③ **父子嵌套正确** —— sub-app 挂在父项目下面，不是并列
 //   ④ 展开能**懒加载**下一层（真磁盘上的子项；绑过角色的目录不重复列）
 //   ⑤ **搜索**能按名命中文件（深目录也搜得到）
 //   ⑥ **新建文件夹**真建出来（落在工作台内的项目记忆目录，不碰真实公司目录）
@@ -23,6 +23,12 @@ const val = (k, d) => { const i = argv.indexOf(k); return i >= 0 && argv[i + 1] 
 const URL_ = val('--url', 'http://127.0.0.1:3080/');
 const PORT = Number(val('--cdp', 9401));
 const ROOT = process.cwd();
+
+// 自检用的项目树命名 —— 按自己环境用参数覆盖：--parent/--parent-path/--child/--child-scene
+const PARENT = val('--parent', '示例父项目');
+const PARENT_PATH = val('--parent-path', '/projects/demo-parent');
+const CHILD = val('--child', 'sub-app');
+const CHILD_SCENE = val('--child-scene', '子端');
 
 // 新建文件夹自检用的场景：**没绑项目目录** ⇒ 落在工作台内的「项目记忆」目录
 //   （不碰机主真实磁盘上的公司目录）
@@ -268,22 +274,22 @@ try {
   })()`);
   const pr = proj.rows || [];
   console.log('项目视图：' + pr.map((r) => r.name + (r.chips.length ? '[' + r.chips.join('') + ']' : '') + (r.nested ? '↳' : '')).join('、'));
-  const gfl = pr.filter((r) => r.name === '总项目')[0] || {};
-  const xq = pr.filter((r) => r.name === 'campus-app')[0] || {};
+  const gfl = pr.filter((r) => r.name === PARENT)[0] || {};
+  const xq = pr.filter((r) => r.name === CHILD)[0] || {};
   const bk = pr.filter((r) => r.name === '05-Bookshelf')[0] || {};
   ok(pr.length >= 5, '② 项目视图列出了项目根（' + pr.length + ' 个）');
-  ok(gfl.path && gfl.path.indexOf('/project/总项目') > 0 && gfl.chips.join('').indexOf('总项目') >= 0,
-    '② 「总项目」绑的是 ' + (gfl.path || '(没找到)') + '，归属正确');
-  ok(xq.path && xq.path.indexOf('/campus-app') > 0 && xq.chips.join('').indexOf('校区端') >= 0,
-    '② 「校区端」绑的是 ' + (xq.path || '(没找到)') + '，归属正确');
+  ok(gfl.path && gfl.path.indexOf(PARENT_PATH) > 0 && gfl.chips.join('').indexOf(PARENT) >= 0,
+    '② 父项目绑的是 ' + (gfl.path || '(没找到)') + '，归属正确');
+  ok(xq.path && xq.path.indexOf('/' + CHILD) > 0 && xq.chips.join('').indexOf(CHILD_SCENE) >= 0,
+    '② 子端绑的是 ' + (xq.path || '(没找到)') + '，归属正确');
   ok(bk.path && bk.path.indexOf('05-Bookshelf') > 0 && bk.chips.join('').indexOf('阅读') >= 0,
-    '② 「阅读」绑的是 ' + (bk.path || '(没找到)') + '，归属正确');
+    '② 读者绑的是 ' + (bk.path || '(没找到)') + '，归属正确');
   ok((proj.hasSearch === true), '② 项目视图里有搜索框');
   await shot(cdp, SHOT_PROJ);
 
-  /* ── ③ 父子嵌套：campus-app 挂在 总项目 下面，不是并列 ──────────── */
+  /* ── ③ 父子嵌套：子目录挂在父项目下面，不是并列 ──────────── */
   ok(xq.nested === true && gfl.nested === false,
-    '③ 父子嵌套正确（campus-app 是总项目的子节点，不是并列）');
+    '③ 父子嵌套正确（' + CHILD + ' 是 ' + PARENT + ' 的子节点，不是并列）');
 
   /* ── ④ 展开能懒加载下一层（真磁盘上的子项） ───────────────────── */
   await cdp.eval(`(function(){
@@ -292,7 +298,7 @@ try {
     var rows = host.shadowRoot.querySelectorAll('.projnode-row');
     for (var i=0;i<rows.length;i++){
       var p = rows[i].getAttribute('data-path')||'';
-      if (p.indexOf('/project/总项目') > 0 && p.indexOf('/campus-app') < 0) { rows[i].click(); return 1; }
+      if (p.indexOf(PARENT_PATH) > 0 && p.indexOf('/' + CHILD) < 0) { rows[i].click(); return 1; }
     }
     return 0;
   })()`);
@@ -303,9 +309,9 @@ try {
     var rows = host.shadowRoot.querySelectorAll('.projnode-row');
     for (var i=0;i<rows.length;i++){
       var p = rows[i].getAttribute('data-path')||'';
-      if (p.indexOf('/project/总项目') > 0 && p.indexOf('/campus-app') < 0){
+      if (p.indexOf(PARENT_PATH) > 0 && p.indexOf('/' + CHILD) < 0){
         var node = rows[i].closest('.projnode');
-        // ⚠ 只看**自己这一层**的盒子 —— 嵌套子目录（campus-app 等）也有 .ftnode-kids，
+        // ⚠ 只看**自己这一层**的盒子 —— 嵌套子目录也有 .ftnode-kids，
         //   不限定直接子节点的话会读到别人的。
         var box = node.querySelector(':scope > .ftnode-kids');
         if (!box) return { names: [], note: 'no-box' };
@@ -316,9 +322,9 @@ try {
     }
     return { names: [] };
   })()`);
-  console.log('展开「总项目」后：' + (kids.names || []).join('、'));
+  console.log('展开父项目后：' + (kids.names || []).join('、'));
   ok((kids.names || []).length > 0, '④ 展开能懒加载下一层（' + (kids.names || []).length + ' 项）');
-  ok(!(kids.names || []).includes('campus-app'),
+  ok(!(kids.names || []).includes(CHILD),
     '④ 绑过角色的目录不在这一层重复列（一份磁盘一棵）');
 
   /* ── ⑤ 搜索能按名命中文件 ─────────────────────────────────────── */
@@ -343,8 +349,8 @@ try {
   })()`);
   console.log('搜「package.json」命中：' + (hits.rows || []).slice(0, 5).join('、'));
   ok(typed === 1 && (hits.rows || []).length > 0, '⑤ 搜索能按名命中文件（' + (hits.rows || []).length + ' 条）');
-  ok((hits.rows || []).some((p) => p.indexOf('campus-app') >= 0),
-    '⑤ 深目录也搜得到（命中里有 campus-app 底下的）');
+  ok((hits.rows || []).some((p) => p.indexOf('/' + CHILD) >= 0),
+    '⑤ 深目录也搜得到（命中里有子目录底下的）');
 
   /* ── ⑥ 新建文件夹（落在工作台内的项目记忆目录，不碰真实公司目录） ── */
   await openScene(cdp, TEST_SCENE);

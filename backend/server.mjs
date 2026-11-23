@@ -852,7 +852,7 @@ export async function handleRequest(req, res) {
       if (!sc) { sendJson(res, 404, { ok: false, error: '没有这个场景：' + scene }); return; }
       const projectRoot = String(sc.projectRoot || '').trim();
       if (!projectRoot) {
-        sendJson(res, 400, { ok: false, error: '「' + sc.name + '」还没绑仓库目录 —— 先在「项目目录」面板里绑定 Obsidian 库 的路径' });
+        sendJson(res, 400, { ok: false, error: '「' + sc.name + '」还没绑仓库目录 —— 先在「项目目录」面板里绑定 Obsidian 库的路径' });
         return;
       }
       if (!fs.existsSync(projectRoot)) {
