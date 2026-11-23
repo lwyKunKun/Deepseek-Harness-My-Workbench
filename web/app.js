@@ -12,10 +12,13 @@
 
 var STATE = {
   scenes: [],
+  categories: [],        // 分类注册表（名字 + 顺序）—— 空分类也在这儿
   mode: 'scenes',        // scenes | registry | desk
   open: null,            // 打开的场景 id（详情页）
   selected: '',          // 场景页左树里选中的角色（右边显示它的卡）
   category: '全部',
+  regCat: '',            // 注册页：记住上次选的分类（登记成功会重画表单 ⇒ 得记着）
+  regMsg: null,          // 注册页：上次的提示（重画会把节点换掉 ⇒ 得记着，否则看不见）
   panelPorts: [],
   usedPorts: {},
   engineUp: false,
@@ -122,43 +125,139 @@ function catalogOpen() {
 }
 function setCatalogOpen(cat, on) {
   var s = catalogOpen();
-  if (on) s[cat] = 1; else delete s[cat];
+  // ⚠ 折叠要**存 0**，不能删键 —— 读取时缺键默认「展开」，
+  //   删了就等于没记下来，点分类头会立刻弹回去（点了跟没点一样）。
+  s[cat] = on ? 1 : 0;
   try { localStorage.setItem(CAT_OPEN_KEY, JSON.stringify(s)); } catch (e) { /* ignore */ }
   render();
 }
 
-/** 场景按分类分组（分类名排序，稳）。 */
+/* ── 左树有两个视图 ────────────────────────────────────────────────
+ *   角色 = 分类 → 角色（谁在干活）
+ *   项目 = 磁盘目录 → 谁绑了它（地在哪）
+ * 两者是**引用**关系，不是包含关系 —— 一个目录可以绑给好几个角色，
+ * 一个角色也可以只管记忆目录不碰真实磁盘。
+ *
+ * 为什么非得拆开：磁盘上「总项目」这个目录恰好是 campus-app 等五个
+ * 目录的**父目录**。按角色各挂一棵 ⇒ 同一份磁盘被复制成六七棵大树，
+ * 视角被文件淹没，角色和目录长得又一样（同名同图标）⇒ 谁都认不出。
+ */
+var TREE_VIEW_KEY = 'wb.tree.view';
+function treeView() {
+  try {
+    var v = String(localStorage.getItem(TREE_VIEW_KEY) || '');
+    return v === 'projects' ? 'projects' : 'roles';
+  } catch (e) { return 'roles'; }
+}
+function setTreeView(v) {
+  try { localStorage.setItem(TREE_VIEW_KEY, v === 'projects' ? 'projects' : 'roles'); } catch (e) { /* ignore */ }
+  render();
+}
+
+/* 项目视图的临时状态（不进场景配置）：
+ *   focus  = 当前所在的目录（面包屑显示它，搜索默认在它底下找）
+ *   locate = 要定位到的目录（从角色跳过来时用，定位完就清掉）
+ *   kw     = 搜索框里的词（切视图回来别丢） */
+var PROJ = { focus: '', locate: '', kw: '' };
+
+/* 上次选中的角色（跨刷新记住）。
+ * ⛔ 右栏只显示**显式选中**的角色 —— 分类是枝，点它不选中也就不该有内容卡。 */
+var SEL_KEY = 'wb.scene.selected';
+function loadSelected() {
+  try { return String(localStorage.getItem(SEL_KEY) || ''); } catch (e) { return ''; }
+}
+function saveSelected(id) {
+  try {
+    if (id) localStorage.setItem(SEL_KEY, id);
+    else localStorage.removeItem(SEL_KEY);
+  } catch (e) { /* ignore */ }
+}
+
+/** 全部分类名：注册表顺序在前，场景里出现但注册表没有的补在最后。
+ *  场景树、分类下拉、注册表是同一份来源 —— 别处别再自己拼一遍。 */
+function allCats() {
+  var cats = (STATE.categories || []).slice();
+  STATE.scenes.forEach(function (s) {
+    var c = s.category || '未分类';
+    if (cats.indexOf(c) < 0) cats.push(c);
+  });
+  return cats;
+}
+
+/** 登记新角色时默认落在哪个分类：优先「工作」（大头在这儿），否则第一个。 */
+function defaultCat() {
+  var cats = allCats();
+  if (cats.indexOf('工作') >= 0) return '工作';
+  return cats[0] || '其它';
+}
+
+/** 场景按分类分组。
+ *
+ *  分类的**定义和顺序**来自注册表（scenarios/_categories.json）⇒
+ *  · 空分类也能存在（先建出来，再把角色拖进去）
+ *  · 顺序写在文件里，换机器也不丢
+ *  场景里出现、注册表里没有的分类会补在最后（手改过 json 也不丢）。
+ */
 function groupByCategory() {
   var map = {};
   var order = [];
+  var names = allCats();
+  names.forEach(function (c) {
+    map[c] = { name: c, scenes: [] };
+    order.push(c);
+  });
   STATE.scenes.forEach(function (s) {
     var c = s.category || '未分类';
     if (!map[c]) { map[c] = { name: c, scenes: [] }; order.push(c); }
     map[c].scenes.push(s);
   });
-  // ⚠ 分类顺序 = 各分类**第一个成员在总顺序里的位置**（不按名字排）
-  //   ⇒ 拖动一个角色到别的分类下，那个分类会跟着挪位置。
   return order.map(function (c) { return map[c]; });
 }
 
-/** 当前选中的角色（默认第一个）。 */
+/** 当前选中的角色。没选过就是没选 —— **不默认挑第一个**：
+ *  否则右栏会凭空长出一张身份卡，看着像「点分类进去就有内容」。 */
 function selectedSceneId() {
   var ids = STATE.scenes.map(function (s) { return s.id; });
-  if (STATE.selected && ids.indexOf(STATE.selected) >= 0) return STATE.selected;
-  return ids[0] || '';
+  var sel = STATE.selected || loadSelected();
+  if (sel && ids.indexOf(sel) >= 0) return sel;
+  return '';
 }
 
 function renderCatalog() {
   var groups = groupByCategory();
   var layout = el('div', 'cat-layout');
 
-  /* ── 左：场景树 ────────────────────────────────────────────── */
+  /* ── 左：场景树 / 项目树 ───────────────────────────────────── */
+  var view = treeView();
+  var proj = buildProjectTree();
+
   var side = el('div', 'cat-side');
   var sideHead = el('div', 'cat-side-head');
-  sideHead.appendChild(el('div', 'cat-side-title', '工作台 · 场景'));
-  sideHead.appendChild(el('div', 'cat-side-count', STATE.scenes.length + ' 个场景'));
+  sideHead.appendChild(el('div', 'cat-side-title', view === 'projects' ? '工作台 · 项目' : '工作台 · 场景'));
+  sideHead.appendChild(el('div', 'cat-side-count', view === 'projects'
+    ? proj.count + ' 个目录'
+    : STATE.scenes.length + ' 个场景'));
   side.appendChild(sideHead);
 
+  /* 切换器：角色 / 项目 —— 两个视图看的是同一批角色的两面 */
+  var sw = el('div', 'side-switch');
+  [['roles', '角色 ' + STATE.scenes.length], ['projects', '项目 ' + proj.count]].forEach(function (t) {
+    var b = el('button', 'side-switch-btn' + (view === t[0] ? ' on' : ''), t[1]);
+    b.addEventListener('click', function () { setTreeView(t[0]); });
+    sw.appendChild(b);
+  });
+  side.appendChild(sw);
+
+  side.appendChild(view === 'projects' ? renderProjectTree(proj) : renderRoleTree(groups));
+  layout.appendChild(side);
+
+  /* ── 右：选中角色的面板卡 ────────────────────────────────────── */
+  layout.appendChild(renderSceneCards(selectedSceneId()));
+  DOM.view.appendChild(layout);
+}
+
+/** 左树 · 角色视图：分类是枝，角色是叶。**不掺文件树** —— 文件在「项目」视图里。 */
+function renderRoleTree(groups) {
   var tree = el('div', 'side-tree');
   var sel = selectedSceneId();
   var open = catalogOpen();
@@ -174,44 +273,50 @@ function renderCatalog() {
       if (Date.now() - DRAG.at < 300) return;      // 刚拖完，别当成点击
       setCatalogOpen(g.name, !isOpen);
     });
-    // 拖到分类标题上 ⇒ 落到这个分类的末尾（分类会跟着变）
+    // 拖到分类标题上 ⇒ 下半区=加进这个分类（归属跟着变）；上半区=排在这个分类前面
     makeDropTarget(bh, g.name, true);
     // ★ 分类本身也能拖（分类的顺序 = 它第一个成员的位置）
     makeDraggable(bh, 'cat:' + g.name);
-    // 分类的右键菜单：改名 / 删除这个分类下的角色
+    // 分类的右键菜单：改名 / 在后面加一个 / 删除这个分类
     wbBindMenu(bh, [
       { id: 'rename-cat', label: '改分类名…' },
+      { id: 'add-cat-after', label: '在这后面加分类' },
       { separator: true },
       { id: 'delete-cat', label: '删掉这个分类', danger: true,
         hint: '只删分类（角色移到「未分类」），角色本身不删' },
     ], function (what) {
       if (what === 'rename-cat') renameCategory(g);
+      else if (what === 'add-cat-after') addCategory(g.name);
       else if (what === 'delete-cat') deleteCategory(g);
     });
     branch.appendChild(bh);
 
     if (isOpen) {
       var kids = el('div', 'side-kids');
-      g.scenes.forEach(function (s) { kids.appendChild(sideLeaf(s, s.id === sel)); });
+      g.scenes.forEach(function (s) {
+        kids.appendChild(sideLeaf(s, s.id === sel));
+      });
+      // 空分类也要看得见 —— 不然「建了分类」跟「没建」长得一样
+      if (!g.scenes.length) kids.appendChild(el('div', 'side-kids-empty', '这个分类还没有角色'));
       branch.appendChild(kids);
     }
     tree.appendChild(branch);
   });
-  side.appendChild(tree);
-  layout.appendChild(side);
-
-  /* ── 右：选中角色的面板卡 ────────────────────────────────────── */
-  layout.appendChild(renderSceneCards(sel));
-  DOM.view.appendChild(layout);
+  // 树底部：建一个新分类（分类是容器，可以先空着，再把角色拖进去）
+  var addRow = el('div', 'side-add-cat', '＋ 新分类');
+  addRow.title = '建一个新分类';
+  addRow.addEventListener('click', function () { addCategory(''); });
+  tree.appendChild(addRow);
+  return tree;
 }
 
 /* ── 拖拽排序：左树里把角色拖来拖去 ──────────────────────────────
  * 规则（跟文件管理器一个脾气）：
  *   · 拖到某个角色上   ⇒ 插到它前面 / 后面（看指针在上半还是下半）
- *   · 拖到某个分类上   ⇒ 落到那个分类的末尾（**分类也会跟着变**）
- *   · 分类的顺序       = 各分类第一个成员在总顺序里的位置（自动跟着走）
- *
- * 存哪儿：data/scene-order.json（服务端 loadScenes() 会按它排）。
+ *   · 拖到某个分类上   ⇒ 上半区 = 排在这个分类前面（**只换顺序，归属不变**）；
+ *                       下半区 = 加到这个分类末尾（**归属也跟着变**）
+ *   · 分类的先后       = 注册表 scenarios/_categories.json 里的位置
+ *   · 角色组内的先后   = data/scene-order.json（服务端按它排）
  */
 var DRAG = { id: '', at: 0 };
 
@@ -367,62 +472,36 @@ function moveScene(draggedId, targetId, mode) {
 }
 
 /**
- * 挪一个**分类**（连带它下面所有角色）。
+ * 挪一个**分类**（换它在注册表里的位置）。
  *
- * 分类在界面上是「枝」，它没有自己的行 —— 它的位置 = 它第一个成员在总顺序里的位置。
- * 所以拖分类 = 把它的成员当成一整块，插到目标位置。
+ * 分类在界面上是「枝」，它没有自己的行 —— 它的位置 = 注册表（scenarios/_categories.json）里的位置。
+ * ⛔ 一级菜单（分类）**只能换位置**，永远是一级菜单 ⇒ 底下角色的 category 一个都不改。
  */
 function moveCategory(catName, targetId, mode) {
-  var members = STATE.scenes.filter(function (s) { return (s.category || '未分类') === catName; });
-  if (!members.length) return;
+  var names = (STATE.categories || []).slice();
+  var from = names.indexOf(catName);
+  if (from < 0) return;
+  names.splice(from, 1);
 
-  // ⛔ 一级菜单（分类）**只能换位置**，永远是一级菜单。
-  //   拖到别的分类上 ⇒ 是「这两个分类换先后」，**不是**「这个分类降级成别人的二级」。
-  //   所以：分类之间拖 ⇒ 只动顺序，成员的 category 一个都不改。
-  var memberIds = members.map(function (s) { return s.id; });
-  var order = STATE.scenes.map(function (s) { return s.id; });
-  var rest = order.filter(function (id) { return memberIds.indexOf(id) < 0; });
-
-  var idx;
+  // 落点 ⇒ 目标分类。
+  // ⚠ 分类标题的落点 id 是**纯分类名**（makeDropTarget 传的是 g.name），
+  //   角色落点才是场景 id —— 两种都要认。
   var targetCat = null;
-  if (mode === 'into') {
-    // 落到某个分类（分类标题）⇒ 排到它后面
-    targetCat = targetId.indexOf('cat:') === 0 ? targetId.slice(4) : targetId;
-    var last = -1;
-    rest.forEach(function (id, i) {
-      var sc = STATE.scenes.filter(function (s) { return s.id === id; })[0];
-      if (sc && (sc.category || '未分类') === targetCat) last = i;
-    });
-    idx = last + 1;
-  } else {
-    // 落到某个角色上 ⇒ 排到它前面/后面（角色不动）
-    var t = rest.indexOf(targetId);
-    if (t < 0) {
-      // 落到的是**分类标题**（targetId = 分类名）⇒ 排到那个分类的前/后
-      var tCat = targetId.indexOf('cat:') === 0 ? targetId.slice(4) : targetId;
-      var first = -1;
-      rest.forEach(function (id, i) {
-        var sc = STATE.scenes.filter(function (s) { return s.id === id; })[0];
-        if (first < 0 && sc && (sc.category || '未分类') === tCat) first = i;
-      });
-      if (first < 0) return;
-      idx = mode === 'before' ? first : first + 1;
-      if (mode === 'after') {
-        // 「after」= 排在那个分类**整块之后**
-        var end = first;
-        rest.forEach(function (id, i) {
-          var sc = STATE.scenes.filter(function (s) { return s.id === id; })[0];
-          if (sc && (sc.category || '未分类') === tCat) end = i;
-        });
-        idx = end + 1;
-      }
-    } else {
-      idx = mode === 'before' ? t : t + 1;
-    }
+  var ts = STATE.scenes.filter(function (s) { return s.id === targetId; })[0];
+  if (ts) {
+    targetCat = ts.category || '未分类';
+  } else if (names.indexOf(targetId) >= 0) {
+    targetCat = targetId;
+  } else if (targetId.indexOf('cat:') === 0) {
+    targetCat = targetId.slice(4);
   }
+  if (!targetCat || targetCat === catName) return;
 
-  var next = rest.slice(0, idx).concat(memberIds, rest.slice(idx));
-  api('POST', '/api/scene/order', { ids: next })
+  var t = names.indexOf(targetCat);
+  var idx = t < 0 ? names.length : (mode === 'before' ? t : t + 1);
+  names.splice(idx, 0, catName);
+
+  api('POST', '/api/categories', { op: 'reorder', ids: names })
     .then(function () { return refreshScenes(); })
     .then(function () { wbToast('「' + catName + '」挪好了'); })
     .catch(function (e) { wbToast('没挪成：' + (e && e.message || e), true); });
@@ -435,8 +514,17 @@ function sideLeaf(s, active) {
   row.appendChild(el('span', 'side-dot', s.icon || '●'));
   row.appendChild(el('span', 'side-leaf-name', s.name));
   if (s.projectRoot) {
-    var mark = el('span', 'scene-proj', '📁');
-    mark.title = '项目目录：' + s.projectRoot;
+    // 角色行上的这个标记 = 「这角色有一块真实磁盘的地盘」。
+    // 点它 ⇒ 跳到「项目」视图定位到那个目录（角色↔项目双向可达）。
+    var mark = el('button', 'scene-proj', '📁');
+    mark.title = '项目目录：' + s.projectRoot + '\n（点一下在「项目」视图里找到它）';
+    mark.setAttribute('aria-label', '在项目视图里定位「' + s.name + '」的项目目录');
+    mark.addEventListener('click', function (e) {
+      e.stopPropagation();
+      PROJ.locate = String(s.projectRoot).replace(/\/+$/, '');
+      PROJ.focus = PROJ.locate;
+      setTreeView('projects');
+    });
     row.appendChild(mark);
   }
   var del = el('button', 'side-del', '🗑');
@@ -447,6 +535,7 @@ function sideLeaf(s, active) {
   row.addEventListener('click', function () {
     if (Date.now() - DRAG.at < 300) return;      // 刚拖完，别当成点击
     STATE.selected = s.id;
+    saveSelected(s.id);
     wbAct(s.id, '选中场景', s.name);
     render();
   });
@@ -466,8 +555,431 @@ function sideLeaf(s, active) {
   return row;
 }
 
-/* ── 右键菜单的动作：改名 / 换分类 ──────────────────────────────── */
+/* ── 左树里的「项目目录」树（VS Code 的资源管理器那样） ─────────────
+ *
+ * 机主原话：「我在工作类下面，可能会有很多工作的文件，做在项目目录里的
+ *            做成树形结构的菜单形式」
+ *   ⇒ 角色（叶）底下挂一棵项目目录的树：文件夹能展开，文件能点开看。
+ *
+ * 展开状态记在 FILETREE.open（路径 → 1）+ localStorage ——
+ *   重新渲染（选中角色 / 切页签 / 刷新页面）之后，展开着的还展开着。
+ */
+var FILETREE_KEY = 'wb.filetree.open';
+var FILETREE = { open: {} };
+try { FILETREE.open = JSON.parse(localStorage.getItem(FILETREE_KEY) || '{}') || {}; } catch (e) { FILETREE.open = {}; }
 
+function fileTreeSet(path, on) {
+  if (on) FILETREE.open[path] = 1; else delete FILETREE.open[path];
+  try { localStorage.setItem(FILETREE_KEY, JSON.stringify(FILETREE.open)); } catch (e) { /* ignore */ }
+}
+function fileTreeIsOpen(path) { return !!FILETREE.open[path]; }
+
+function ftSize(n) {
+  n = Number(n) || 0;
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' K';
+  return (n / 1024 / 1024).toFixed(1) + ' M';
+}
+
+/* ── 项目视图：磁盘目录 ⇄ 角色 ────────────────────────────────────
+ *
+ * 一棵树，根是**真实磁盘上的目录**，节点上标着**谁绑了它**。
+ * 父子关系按路径本身来（总项目那个目录是 campus-app 的父）⇒ 一份磁盘一棵，
+ * 不会像以前那样按角色复制出六七棵大分叉。
+ *
+ * 两种节点，长得不一样：
+ *   📂 绑定目录 = 有人把它当地盘（标着角色）
+ *   📁 磁盘子项 = 目录里的普通内容
+ */
+
+/** 把所有角色绑的 projectRoot 拼成一棵按磁盘路径的树。 */
+function buildProjectTree() {
+  var byPath = {};
+  var bound = STATE.scenes.filter(function (s) { return s.projectRoot; });
+
+  bound.forEach(function (s) {
+    var p = String(s.projectRoot).replace(/\/+$/, '');
+    if (!p || byPath[p]) return;
+    byPath[p] = { path: p, name: p.split('/').pop() || p, scenes: [], children: [] };
+  });
+
+  // 按路径长度排 ⇒ 父目录一定排在子目录前面（父路径更短）
+  var paths = Object.keys(byPath).sort(function (a, b) { return a.length - b.length; });
+  paths.forEach(function (p) {
+    var node = byPath[p];
+    var parent = null;
+    paths.forEach(function (q) {
+      if (q === p || p.indexOf(q + '/') !== 0) return;
+      if (!parent || q.length > parent.path.length) parent = byPath[q];
+    });
+    if (parent) parent.children.push(node);
+  });
+
+  // 角色挂到它绑的那个节点上（同一个目录可以绑给好几个角色）
+  bound.forEach(function (s) {
+    var p = String(s.projectRoot).replace(/\/+$/, '');
+    if (byPath[p]) byPath[p].scenes.push(s);
+  });
+
+  // 同一层的孩子按**名字**排 —— 目录一栏得是字母序，不是按路径长度乱序
+  var byName = function (a, b) { return a.name.localeCompare(b.name); };
+  var roots = paths.filter(function (p) {
+    return !paths.some(function (q) { return q !== p && p.indexOf(q + '/') === 0; });
+  });
+  roots.sort(function (a, b) { return a.length - b.length || a.localeCompare(b); });
+  Object.keys(byPath).forEach(function (p) { byPath[p].children.sort(byName); });
+
+  return { roots: roots.map(function (p) { return byPath[p]; }), byPath: byPath, count: paths.length };
+}
+
+/** 项目视图：面包屑 + 搜索 + 目录树。 */
+function renderProjectTree(pt) {
+  var box = el('div', 'side-tree proj-tree');
+
+  if (!pt.roots.length) {
+    box.appendChild(el('div', 'side-kids-empty', '还没有角色绑真实目录 —— 到角色详情页的「项目目录」面板里绑一个'));
+    return box;
+  }
+
+  box.appendChild(projCrumb());
+  box.appendChild(projSearch(pt));
+
+  pt.roots.forEach(function (node) {
+    box.appendChild(projNode(node, pt));
+  });
+
+  // 从角色跳过来 ⇒ 定位到那个目录（滚过去 + 闪一下）
+  if (PROJ.locate) {
+    var loc = PROJ.locate;
+    PROJ.locate = '';
+    var row = null;
+    Array.prototype.forEach.call(box.querySelectorAll('.projnode-row'), function (r) {
+      if (r.getAttribute('data-path') === loc) row = r;
+    });
+    if (row) {
+      row.classList.add('locate');
+      setTimeout(function () {
+        row.scrollIntoView({ block: 'center' });
+        setTimeout(function () { row.classList.remove('locate'); }, 2400);
+      }, 80);
+    }
+  }
+  return box;
+}
+
+/** 项目树里的一个节点 = 磁盘上的一个目录。 */
+function projNode(node, pt) {
+  var wrap = el('div', 'projnode');
+  var row = el('div', 'projnode-row');
+  row.setAttribute('data-path', node.path);
+  row.title = node.path;
+
+  row.appendChild(el('span', 'ftnode-twisty', fileTreeIsOpen(node.path) ? '▾' : '▸'));
+  row.appendChild(el('span', 'ftnode-icon', '📂'));
+  row.appendChild(el('span', 'projnode-name', node.name));
+
+  // 谁绑了这个目录 —— 一眼看出归属（痛点：不知道哪些目录归谁）
+  node.scenes.forEach(function (s) {
+    var chip = el('button', 'proj-chip', (s.icon || '●') + ' ' + s.name);
+    chip.title = '这个目录绑给了「' + s.name + '」—— 点一下跳到那个角色';
+    chip.addEventListener('click', function (e) {
+      e.stopPropagation();
+      STATE.selected = s.id;
+      saveSelected(s.id);
+      wbAct(s.id, '选中场景', s.name);
+      setTreeView('roles');
+    });
+    row.appendChild(chip);
+  });
+
+  wrap.appendChild(row);
+
+  // 磁盘上**也是绑定目录**的子节点 ⇒ 直接列出来（不用展开才知道这个仓库归了几个人）
+  if (node.children.length) {
+    var subs = el('div', 'projnode-subs');
+    node.children.forEach(function (c) { subs.appendChild(projNode(c, pt)); });
+    wrap.appendChild(subs);
+  }
+
+  // 真实磁盘上的内容（懒加载）
+  var kids = el('div', 'ftnode-kids');
+  kids.setAttribute('data-ft-dir', node.path);
+  kids.__skip = pt.byPath;      // 绑定目录已经单独画过了，别重复
+  wrap.appendChild(kids);
+
+  var scene = node.scenes[0] || null;
+  row.addEventListener('click', function () {
+    PROJ.focus = node.path;
+    ftToggle(row, kids, node.path, scene);
+  });
+  wbBindMenu(row, ftFolderMenu(), function (what) {
+    ftAction(what, node.path, scene, kids);
+  });
+  if (fileTreeIsOpen(node.path)) ftToggle(row, kids, node.path, scene, true);
+  return wrap;
+}
+
+/** 面包屑：当前所在目录，点任一段跳过去。 */
+function projCrumb() {
+  var box = el('div', 'proj-crumb');
+  var segs = PROJ.focus ? PROJ.focus.split('/').filter(Boolean) : [];
+  box.appendChild(el('span', 'crumb-sep', '／'));
+  if (!segs.length) {
+    box.appendChild(el('span', 'crumb-dim', '（选一个目录）'));
+    return box;
+  }
+  var acc = '';
+  segs.forEach(function (seg, i) {
+    acc += '/' + seg;
+    var last = i === segs.length - 1;
+    var b = el('button', 'crumb' + (last ? ' on' : ''), seg);
+    b.title = acc;
+    b.addEventListener('click', function () {
+      PROJ.focus = acc;
+      PROJ.locate = acc;
+      render();
+    });
+    box.appendChild(b);
+  });
+  return box;
+}
+
+/** 搜索框：在当前目录底下按文件名找（深目录一层层点太费劲）。 */
+function projSearch(pt) {
+  var box = el('div', 'proj-search');
+  var input = el('input', 'ft-search');
+  input.type = 'search';
+  var scope = PROJ.focus || (pt.roots[0] && pt.roots[0].path) || '';
+  input.placeholder = '搜文件名（' + (scope.split('/').pop() || '当前目录') + ' 底下）';
+  input.value = PROJ.kw || '';
+  var res = el('div', 'proj-search-res');
+  box.appendChild(input);
+  box.appendChild(res);
+
+  var timer = null;
+  function run() {
+    var kw = input.value.trim();
+    PROJ.kw = kw;
+    res.innerHTML = '';
+    if (!kw) return;
+    api('GET', '/api/fs/search?dir=' + encodeURIComponent(scope) + '&q=' + encodeURIComponent(kw))
+      .then(function (r) {
+        res.innerHTML = '';
+        if (!r || !r.ok) {
+          res.appendChild(el('div', 'ftnode-note', '搜不了：' + (r && r.error || '未知')));
+          return;
+        }
+        if (!r.rows.length) {
+          res.appendChild(el('div', 'ftnode-note', '没找到「' + kw + '」'));
+          return;
+        }
+        r.rows.forEach(function (n) {
+          var row = el('div', 'ftnode-row ftnode-hit');
+          row.appendChild(el('span', 'ftnode-icon', n.isDir ? '📁' : '📄'));
+          row.appendChild(el('span', 'ftnode-name', n.rel || n.name));
+          if (!n.isDir) row.appendChild(el('span', 'ftnode-size', ftSize(n.size)));
+          row.title = n.path;
+          row.addEventListener('click', function () {
+            if (!n.isDir) { wbFilePreview(n.path, n.name); return; }
+            // 目录 ⇒ 在结果里就地展开（继续往下钻）
+            var kids = el('div', 'ftnode-kids');
+            row.appendChild(kids);
+            ftLoad(kids, n.path, null);
+          });
+          res.appendChild(row);
+        });
+        if (r.truncated) res.appendChild(el('div', 'ftnode-note', '（结果太多，只列了前面一部分）'));
+      });
+  }
+
+  input.addEventListener('input', function () {
+    clearTimeout(timer);
+    timer = setTimeout(run, 250);
+  });
+  if (PROJ.kw) setTimeout(run, 0);
+  return box;
+}
+
+/** 展开 / 收起一个文件夹（懒加载下一层）。 */
+function ftToggle(row, kids, path, scene, force) {
+  var open = force || !fileTreeIsOpen(path);
+  fileTreeSet(path, open);
+  var tw = row.querySelector('.ftnode-twisty');
+  if (tw) tw.textContent = open ? '▾' : '▸';
+  if (!open) { kids.innerHTML = ''; kids.removeAttribute('data-loaded'); return; }
+  if (kids.getAttribute('data-loaded') === '1') { kids.style.display = ''; return; }
+  ftLoad(kids, path, scene);
+}
+
+/** 读一个目录的内容，画成子节点。
+ *  kids.__skip = 已经单独渲染过的绑定目录（路径 → 节点）——
+ *    它们在磁盘上也存在，但显示成「📂 带角色」的节点，别重复列一遍。 */
+function ftLoad(kids, path, scene) {
+  var skip = kids.__skip || null;
+  kids.innerHTML = '';
+  kids.style.display = '';
+  kids.appendChild(el('div', 'ftnode-note', '读…'));
+  api('GET', '/api/fs/tree?dir=' + encodeURIComponent(path) + '&depth=1').then(function (r) {
+    kids.innerHTML = '';
+    kids.setAttribute('data-loaded', '1');
+    if (!r || !r.ok) { kids.appendChild(el('div', 'ftnode-note', '读不了：' + (r && r.error || '未知'))); return; }
+    var rows = r.rows.filter(function (n) { return !(skip && skip[n.path]); });
+    if (!rows.length) { kids.appendChild(el('div', 'ftnode-note', '（空）')); return; }
+    rows.forEach(function (n) { kids.appendChild(ftNode(n, scene, skip)); });
+  });
+}
+
+/** 重新读一个目录（新建完东西刷新那一块）。 */
+function ftReload(kids, scene) {
+  var dir = kids.getAttribute('data-ft-dir');
+  if (!dir) return;
+  kids.removeAttribute('data-loaded');
+  ftLoad(kids, dir, scene);
+}
+
+/** 一个文件夹 / 文件的节点。 */
+function ftNode(n, scene, skip) {
+  var wrap = el('div', 'ftnode');
+  var row = el('div', 'ftnode-row');
+  row.setAttribute('data-ft-path', n.path);
+  row.appendChild(el('span', 'ftnode-twisty', n.isDir ? (fileTreeIsOpen(n.path) ? '▾' : '▸') : ''));
+  row.appendChild(el('span', 'ftnode-icon', n.isDir ? '📁' : '📄'));
+  row.appendChild(el('span', 'ftnode-name', n.name));
+  if (!n.isDir) row.appendChild(el('span', 'ftnode-size', ftSize(n.size)));
+  row.title = n.path;
+  wrap.appendChild(row);
+  if (n.isDir) {
+    var kids = el('div', 'ftnode-kids');
+    kids.setAttribute('data-ft-dir', n.path);
+    kids.__skip = skip || null;      // 绑定目录不在下面重复列
+    wrap.appendChild(kids);
+    row.addEventListener('click', function () { ftToggle(row, kids, n.path, scene); });
+    wbBindMenu(row, ftFolderMenu(), function (what) { ftAction(what, n.path, scene, kids); });
+    if (fileTreeIsOpen(n.path)) ftToggle(row, kids, n.path, scene, true);
+  } else {
+    row.addEventListener('click', function () { wbFilePreview(n.path, n.name); });
+    wbBindMenu(row, ftFileMenu(), function (what) { ftFileAction(what, n); });
+  }
+  return wrap;
+}
+
+function ftFolderMenu() {
+  return [
+    { id: 'mkdir', label: '新建文件夹…' },
+    { id: 'mkfile', label: '新建文件…' },
+    { separator: true },
+    { id: 'copy', label: '复制路径' },
+    { id: 'session', label: '在这里开一条会话' },
+    { id: 'reload', label: '刷新这一层' },
+  ];
+}
+function ftFileMenu() {
+  return [
+    { id: 'open', label: '打开看看' },
+    { separator: true },
+    { id: 'copy', label: '复制路径' },
+  ];
+}
+
+function ftAction(what, path, scene, kids) {
+  if (what === 'mkdir') ftCreate(path, scene, 'dir', kids);
+  else if (what === 'mkfile') ftCreate(path, scene, 'file', kids);
+  else if (what === 'copy') ftCopy(path);
+  else if (what === 'session') ftSession(path, scene);
+  else if (what === 'reload') ftReload(kids, scene);
+}
+function ftFileAction(what, n) {
+  if (what === 'open') wbFilePreview(n.path, n.name);
+  else if (what === 'copy') ftCopy(n.path);
+}
+
+/** 新建文件夹 / 文件（名字走对话框，跟工作台其它地方一个脾气）。 */
+function ftCreate(dir, scene, kind, kids) {
+  wbDialog({
+    title: kind === 'dir' ? '新建文件夹' : '新建文件',
+    desc: '位置：' + dir,
+    submitText: '建好了',
+    fields: [{ key: 'name', label: kind === 'dir' ? '文件夹名' : '文件名', type: 'text', value: '' }],
+    validate: function (v) {
+      var n = String(v.name || '').trim();
+      if (!n) return '名字不能空';
+      if (n.indexOf('/') >= 0 || n.indexOf('\\') >= 0) return '名字里不能带 / 或 \\';
+      return null;
+    },
+    onSubmit: function (v) {
+      return api('POST', '/api/fs/create', {
+        scene: scene.id, dir: dir, name: String(v.name).trim(), kind: kind,
+      }).then(function (r) {
+        if (!r || !r.ok) throw new Error((r && r.error) || '建不出来');
+        wbToast('建好了：' + r.name);
+        ftReload(kids, scene);
+      });
+    },
+  });
+}
+
+function ftCopy(path) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(path);
+      wbToast('路径复制好了');
+      return;
+    }
+  } catch (e) { /* 复制不了就把它显示出来 */ }
+  wbToast(path);
+}
+
+function ftSession(path, scene) {
+  api('POST', '/api/sessions/create', {
+    scene: scene.id,
+    title: (scene.name || scene.id) + '·' + String(path).split('/').filter(Boolean).pop(),
+    cwd: path,
+  }).then(function (r) {
+    if (!r || !r.ok) { wbToast('开会话失败：' + (r && r.error || '未知'), true); return; }
+    wbToast('开好了，工作目录 = ' + path);
+  });
+}
+
+/** 点开一个文件 ⇒ 弹个窗看前几百行（二进制就不给看）。 */
+function wbFilePreview(path, name) {
+  var overlay = document.createElement('div');
+  overlay.className = 'dialog open';
+  var card = document.createElement('div');
+  card.className = 'dialog-card wide';
+  overlay.appendChild(card);
+  var h = document.createElement('h3');
+  h.textContent = name;
+  card.appendChild(h);
+  var meta = document.createElement('p');
+  meta.className = 'dialog-p';
+  meta.textContent = path;
+  card.appendChild(meta);
+  var pre = document.createElement('pre');
+  pre.className = 'dialog-pre';
+  pre.textContent = '读 ' + name + ' …';
+  card.appendChild(pre);
+  var actions = document.createElement('div');
+  actions.className = 'dialog-actions';
+  var close = document.createElement('button');
+  close.className = 'chip solid';
+  close.textContent = '关上';
+  actions.appendChild(close);
+  card.appendChild(actions);
+  wbRoot().appendChild(overlay);
+  function shut() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
+  close.addEventListener('click', shut);
+  overlay.addEventListener('click', function (e) { if (e.target === overlay) shut(); });
+  api('GET', '/api/fs/read?path=' + encodeURIComponent(path)).then(function (r) {
+    if (!r || !r.ok) { pre.textContent = '读不了：' + (r && r.error || '未知'); return; }
+    var text = String(r.text || '');
+    if (text.indexOf('\u0000') >= 0) { pre.textContent = '（二进制文件，这儿看不了）'; return; }
+    var lines = text.split('\n');
+    pre.textContent = lines.slice(0, 500).join('\n')
+      + (lines.length > 500 ? '\n…（后面还有 ' + (lines.length - 500) + ' 行）' : '');
+  });
+}
+
+/* ── 右键菜单的动作：改名 / 换分类 ──────────────────────────────── */
 /** 改分类名 ⇒ 该分类下所有场景的 category 都跟着改。 */
 function renameCategory(g) {
   var old = g.name;
@@ -480,13 +992,35 @@ function renameCategory(g) {
       var name = String(v.name || '').trim();
       if (!name) throw new Error('分类名不能空');
       if (name === old) return { ok: true };
-      // 一个一个改（分类改名不是批量接口，但每个角色都有 /api/scene/category）
-      return g.scenes.reduce(function (chain, sc) {
-        return chain.then(function () {
-          return api('POST', '/api/scene/category', { id: sc.id, category: name });
-        });
-      }, Promise.resolve()).then(function () {
+      // 一次请求搞定：注册表改名 + 底下角色的 category 字段一起改
+      return api('POST', '/api/categories', { op: 'rename', name: old, newName: name }).then(function (r) {
+        if (!r || !r.ok) throw new Error((r && r.error) || '改名失败');
         wbToast('分类改成「' + name + '」了');
+        return refreshScenes();
+      });
+    },
+  });
+}
+
+/**
+ * 新建分类。
+ *
+ * 分类是「枝」：可以先建出来（空的），再把角色拖进去。
+ * after = 插在哪个分类之后；空 = 追加到最后。
+ */
+function addCategory(after) {
+  wbDialog({
+    title: after ? ('在「' + after + '」后面加一个分类') : '新加一个分类',
+    desc: '分类是个「枝」：先建出来，再把角色拖进去。\n'
+      + '分类名别跟角色重名（重了就分不清哪行是分类哪行是角色）。',
+    submitText: '建好了',
+    fields: [{ key: 'name', label: '分类名', type: 'text', value: '' }],
+    onSubmit: function (v) {
+      var name = String(v.name || '').trim();
+      if (!name) throw new Error('分类名不能空');
+      return api('POST', '/api/categories', { op: 'create', name: name, after: after || '' }).then(function (r) {
+        if (!r || !r.ok) throw new Error((r && r.error) || '建分类失败');
+        wbToast('分类「' + name + '」建好了');
         return refreshScenes();
       });
     },
@@ -497,17 +1031,15 @@ function renameCategory(g) {
 function deleteCategory(g) {
   wbDialog({
     title: '删掉分类「' + g.name + '」',
-    desc: '这个分类下有 ' + g.scenes.length + ' 个角色。\n'
-      + '它们会移到「未分类」，**角色本身不会删**。',
+    desc: g.scenes.length
+      ? ('这个分类下有 ' + g.scenes.length + ' 个角色。\n它们会移到「未分类」，**角色本身不会删**。')
+      : '这个分类是空的，删掉它就行。',
     submitText: '删分类',
     fields: [],
     onSubmit: function () {
-      return g.scenes.reduce(function (chain, sc) {
-        return chain.then(function () {
-          return api('POST', '/api/scene/category', { id: sc.id, category: '未分类' });
-        });
-      }, Promise.resolve()).then(function () {
-        wbToast('分类删了，角色移到「未分类」');
+      return api('POST', '/api/categories', { op: 'delete', name: g.name }).then(function (r) {
+        if (!r || !r.ok) throw new Error((r && r.error) || '删分类失败');
+        wbToast('分类删了' + (r.moved ? '，' + r.moved + ' 个角色移到「未分类」' : ''));
         return refreshScenes();
       });
     },
@@ -534,12 +1066,8 @@ function renameScene(s) {
 }
 
 function changeCategory(s) {
-  // 分类列表 = 现有的分类 + 新的一个
-  var cats = [];
-  STATE.scenes.forEach(function (x) {
-    var c = x.category || '未分类';
-    if (cats.indexOf(c) < 0) cats.push(c);
-  });
+  // 分类列表 = 注册表里的（含空分类）+ 场景里出现过的 + 未分类
+  var cats = allCats();
   if (cats.indexOf('未分类') < 0) cats.push('未分类');
   wbDialog({
     title: '换分类：' + s.name,
@@ -585,7 +1113,7 @@ function confirmDeleteScene(s) {
         if (r.sessions && r.sessions.length) bits.push(r.sessions.length + ' 条会话已归档');
         if (r.warnings && r.warnings.length) bits.push(r.warnings.length + ' 条警告');
         if (r.trash) bits.push('已移到 ' + r.trash + '（可还原）');
-        if (STATE.selected === s.id) STATE.selected = '';
+        if (STATE.selected === s.id) { STATE.selected = ''; saveSelected(''); }
         return refreshScenes().then(function () {
           wbToast('已删除「' + r.name + '」' + (bits.length ? '（' + bits.join('、') + '）' : ''));
           return { ok: true };
@@ -679,7 +1207,17 @@ function renderSceneCards(id) {
   var sc = STATE.scenes.filter(function (s) { return s.id === id; })[0];
   var main = el('div', 'cat-main');
   if (!sc) {
-    main.appendChild(el('div', 'todo-empty', '还没有角色 —— 去「注册」登记一个'));
+    if (!STATE.scenes.length) {
+      main.appendChild(el('div', 'todo-empty', '还没有角色 —— 去「注册」登记一个'));
+      return main;
+    }
+    // ⛔ 没选中角色 ⇒ 右栏**不出任何内容卡**（身份卡这些都挂在角色身上）。
+    //   分类（枝）只是分组容器，点它不会选中角色，右栏就该是空的。
+    var empty = el('div', 'cat-empty');
+    empty.appendChild(el('div', 'cat-empty-icon', '◫'));
+    empty.appendChild(el('div', 'cat-empty-title', '还没选角色'));
+    empty.appendChild(el('div', 'cat-empty-sub', '左边点一个角色，右边显示它的身份卡、项目信息、索引和会话。'));
+    main.appendChild(empty);
     return main;
   }
 
@@ -715,6 +1253,9 @@ function renderSceneCards(id) {
     //   只按「## §〇」切一刀的话，后面 §一/§二/§五/§六 全都跟着进来了。
     var sec0 = String(r.main || '').split(/^##\s*§〇.*$/m)[1] || '';
     sec0 = sec0.split(/\n##\s/)[0];
+    // ⚠ 自动区（派生内容）在文件里是带 <!-- 自动:… --> 标记的 ——
+    //   摘要卡给人看，不该露出这行标记 ⇒ 只去掉标记，留内容。
+    sec0 = sec0.replace(/<!--\s*自动:[^>]*?-->/g, '');
     fillCard(cMem, sec0.trim(), 9);
   });
 
@@ -848,7 +1389,7 @@ function renderSceneDetail(id) {
     { id: id + '-id', title: '身份卡', sub: '每场读的那张卡', type: 'identity', col: 1, row: 1, w: 1, h: 5 },
     { id: id + '-mem', title: '项目信息', sub: '§〇 开场先读', type: 'memory', col: 2, row: 1, w: 1, h: 5 },
     { id: id + '-idx', title: '索引', sub: '场景索引 · 资产索引', type: 'indexmap', col: 3, row: 1, w: 1, h: 3 },
-    { id: id + '-health', title: '体检', sub: '这个场景的', type: 'health', col: 3, row: 4, w: 1, h: 2 },
+    { id: id + '-health', title: '体检', sub: '这个场景的', type: 'health', col: 1, row: 6, w: 1, h: 2 },
   ];
   // 会话面板：沿用场景配置里那个 harness 面板（带绑定）
   var ai = (sc.panels || []).filter(function (p) { return p.type === 'harness'; })[0];
@@ -864,12 +1405,14 @@ function renderSceneDetail(id) {
     pinTarget: (ai && ai.pinTarget) || [sc.name],
   });
   // 项目目录：把真实磁盘上的文件夹挂到这个角色上（AI 在那儿写代码）
+  //   w:2 —— 跨 col3/col4 两栏。窄条里放文件树，文件名全被截成「package-lo...」，
+  //   翻深目录根本没法用 ⇒ 给它两栏的宽度（体检挪到左下角腾地方）。
   layout.push({
     id: id + '-proj',
     title: '项目目录',
     sub: '真实磁盘 · AI 在这儿写代码',
     type: 'project',
-    col: 4, row: 4, w: 1, h: 2,
+    col: 3, row: 4, w: 2, h: 3,
     scene: id,
   });
   // 书架：**只挂给声明了 books 型仓库的场景**（现在只有「阅读」）。
@@ -910,6 +1453,30 @@ function renderSceneDetail(id) {
 }
 
 /* ── ③ 注册页 ──────────────────────────────────────────────────── */
+
+/** 弹一个「新建分类」的框。建好了分类已经进了注册表，onOk 拿名字。 */
+function newCategoryDialog(onOk) {
+  wbDialog({
+    title: '新建分类',
+    desc: '分类是个「枝」：先建出来，再把角色放进去。\n名字别跟角色重名（重了分不清哪行是分类哪行是角色）。',
+    submitText: '建好了',
+    fields: [{ key: 'name', label: '分类名', type: 'text', value: '' }],
+    validate: function (v) {
+      return String(v.name || '').trim() ? '' : '分类名不能空';
+    },
+    onSubmit: function (v) {
+      var name = String(v.name || '').trim();
+      return api('POST', '/api/categories', { op: 'create', name: name }).then(function (r) {
+        if (!r || !r.ok) throw new Error((r && r.error) || '建分类失败');
+        // 服务端已写进注册表 ⇒ 本地补一份，界面立刻就能选到
+        if ((STATE.categories || []).indexOf(name) < 0) STATE.categories.push(name);
+        onOk(name);
+        return { ok: true };
+      });
+    },
+  });
+}
+
 function renderRegistry() {
   var wrap = el('div', 'registry');
   DOM.view.appendChild(wrap);
@@ -923,7 +1490,6 @@ function renderRegistry() {
 
   var f = {};
   [['name', '名字', '这个角色叫什么'], ['icon', '图标', '一个字符，如 ⌘ ◎ ⚙'],
-   ['category', '分类', '归到哪一类，如 指挥 / 研究 / 运维'],
    ['duty', '一句话职责', '它负责什么（可观察、可判断）'],
    ['skills', '专属技能', '逗号分隔']].forEach(function (spec) {
     form.appendChild(el('label', 'disp-label', spec[1]));
@@ -932,29 +1498,104 @@ function renderRegistry() {
     form.appendChild(i);
     f[spec[0]] = i;
   });
+
+  /* 分类 = 下拉，选项来自分类注册表（跟场景页那棵树同一份）。
+   * 手输容易打出「工作 」「工作」这种跟注册表对不上的名字 ⇒ 变成只有场景、
+   * 注册表里没有的孤儿分类，注册表就再也说不清它排在哪儿。 */
+  form.appendChild(el('label', 'disp-label', '分类'));
+  var NEW_CAT = '__new__';
+  var catSel = el('select', 'disp-input disp-select');
+  var lastCat = '';       // 下拉上一次的值（change 时要拿它当「用户原来选的那个」）
+  function fillCats(current) {
+    catSel.innerHTML = '';
+    var names = allCats();
+    names.forEach(function (c) {
+      var o = document.createElement('option');
+      o.value = c;
+      o.textContent = c;
+      catSel.appendChild(o);
+    });
+    var o = document.createElement('option');
+    o.value = NEW_CAT;
+    o.textContent = '＋ 新建分类…';
+    catSel.appendChild(o);
+    // ⚠ current / STATE.regCat 可能是**过期**的分类（它后来被删或被改名了）。
+    //   下拉里没有这个选项时，select.value 会被置成空串 ⇒ 登记时提交空 category
+    //   ⇒ 服务端兜底成「其它」⇒ 又冒出一个孤儿分类（正是这里要消灭的东西）。所以校验一下。
+    var want = current || STATE.regCat || defaultCat();
+    if (names.indexOf(want) < 0) want = defaultCat();   // 过期值 ⇒ 回落默认分类（defaultCat 就在 names 里）
+    catSel.value = want;
+    lastCat = catSel.value;
+    STATE.regCat = catSel.value;   // 记住当前选中的（切走再回来还在原地）
+  }
+  fillCats();
+  catSel.addEventListener('change', function () {
+    if (catSel.value !== NEW_CAT) { lastCat = catSel.value; return; }
+    // 选中「新分类」只是意图 ⇒ 先复原到**用户原来选的那个**（lastCat），不是默认分类。
+    //   取消也不留残值，更不会把他原来的选择改掉。
+    //   ⚠ 不能靠 selectedIndex-1 找「原来那个」：change 触发时 selectedIndex
+    //     已经是新值了 ⇒ 得自己记着上一次是什么。
+    catSel.value = lastCat || defaultCat();
+    lastCat = catSel.value;
+    newCategoryDialog(function (name) {
+      fillCats(name);
+      wbToast('分类「' + name + '」建好了');
+    });
+  });
+  form.appendChild(catSel);
+
   var msg = el('div', 'disp-msg');
+  if (STATE.regMsg) {
+    msg.className = 'disp-msg ' + STATE.regMsg.kind;
+    msg.textContent = STATE.regMsg.text;
+  }
+  // 用户开始改名字 ⇒ 上一条提示（「✓ 登记好了」之类）就没意义了 ⇒ 清掉
+  f.name.addEventListener('input', function () {
+    if (!STATE.regMsg) return;
+    STATE.regMsg = null;
+    msg.className = 'disp-msg';
+    msg.textContent = '';
+  });
   var go = el('button', 'panel-btn solid', '登记');
   go.addEventListener('click', function () {
     var body = {
       name: f.name.value.trim(),
       icon: f.icon.value.trim() || '●',
-      category: f.category.value.trim() || '其它',
+      category: catSel.value,
       duty: f.duty.value.trim(),
       skills: f.skills.value.split(/[,，]/).map(function (x) { return x.trim(); }).filter(Boolean),
     };
-    if (!body.name) { msg.className = 'disp-msg bad'; msg.textContent = '要名字'; return; }
+    if (!body.name) {
+      msg.className = 'disp-msg bad';
+      msg.textContent = '要名字';
+      STATE.regMsg = { kind: 'bad', text: '要名字' };
+      return;
+    }
+    if (!body.category) {
+      // 一个可用分类都没有 ⇒ 别提交空 category（服务端会兜底成「其它」，冒孤儿分类）
+      msg.className = 'disp-msg bad';
+      msg.textContent = '先在下拉里选个分类（或选「＋ 新建分类…」建一个）';
+      STATE.regMsg = { kind: 'bad', text: msg.textContent };
+      return;
+    }
     go.disabled = true;
+    msg.className = 'disp-msg';
     msg.textContent = '登记中…';
+    STATE.regMsg = { kind: '', text: '登记中…' };
     api('POST', '/api/scenes/create', body).then(function (r) {
       go.disabled = false;
       if (r && r.ok) {
-        msg.className = 'disp-msg ok';
-        msg.textContent = '✓ 登记好了：' + r.id + '　去「场景」页点开它，再建一条会话';
-        ['name', 'icon', 'category', 'duty', 'skills'].forEach(function (k) { f[k].value = ''; });
+        // ⚠ refreshScenes() 会把整个注册页重画 ⇒ 选中的分类和这句提示
+        //   得先存进 STATE：不然重画后下拉跳回默认分类、提示也跟着没了。
+        STATE.regCat = catSel.value;
+        STATE.regMsg = { kind: 'ok', text: '✓ 登记好了：' + r.id + '　去「场景」页点开它，再建一条会话' };
+        // 分类留着不清 —— 连着登记同类角色时不用每次重选
+        ['name', 'icon', 'duty', 'skills'].forEach(function (k) { f[k].value = ''; });
         refreshScenes();
       } else {
+        STATE.regMsg = { kind: 'bad', text: '✗ ' + (r && (r.error || '没登记成')) };
         msg.className = 'disp-msg bad';
-        msg.textContent = '✗ ' + (r && (r.error || '没登记成'));
+        msg.textContent = STATE.regMsg.text;
       }
     });
   });
@@ -965,16 +1606,25 @@ function renderRegistry() {
   function renderList() {
     listBox.innerHTML = '';
     listBox.appendChild(el('div', 'reg-h', '已登记（' + STATE.scenes.length + '）'));
-    STATE.scenes.forEach(function (s) {
-      var row = el('div', 'reg-row');
-      row.appendChild(el('span', 'reg-icon', s.icon || '●'));
-      row.appendChild(el('span', 'reg-name', s.name));
-      row.appendChild(el('span', 'reg-cat', s.category || ''));
-      row.appendChild(el('span', 'reg-duty', s.duty || ''));
-      var open = el('button', 'panel-btn', '打开');
-      open.addEventListener('click', function () { STATE.mode = 'scenes'; openScene(s.id); });
-      row.appendChild(open);
-      listBox.appendChild(row);
+    // 按分类分组 —— 跟场景页左树同一套分组与顺序（groupByCategory）
+    groupByCategory().forEach(function (g) {
+      if (!g.scenes.length) return;      // 空分类不进名单（场景树里才看得见它）
+      var box = el('div', 'reg-group');
+      var head = el('div', 'reg-group-head');
+      head.appendChild(el('span', 'reg-group-name', g.name));
+      head.appendChild(el('span', 'side-count', String(g.scenes.length)));
+      box.appendChild(head);
+      g.scenes.forEach(function (s) {
+        var row = el('div', 'reg-row');
+        row.appendChild(el('span', 'reg-icon', s.icon || '●'));
+        row.appendChild(el('span', 'reg-name', s.name));
+        row.appendChild(el('span', 'reg-duty', s.duty || ''));
+        var open = el('button', 'panel-btn', '打开');
+        open.addEventListener('click', function () { STATE.mode = 'scenes'; openScene(s.id); });
+        row.appendChild(open);
+        box.appendChild(row);
+      });
+      listBox.appendChild(box);
     });
   }
   renderList();
@@ -1351,6 +2001,7 @@ function refreshScenes() {
   return api('GET', '/api/state').then(function (r) {
     if (!r || !r.ok) return;
     STATE.scenes = r.scenes || [];
+    STATE.categories = r.categories || [];
     STATE.panelPorts = r.panelPorts || [];
     setEngineStatus(!!(r.engine && r.engine.up), r.engine && r.engine.up ? '引擎已连' : '引擎未连');
     render();

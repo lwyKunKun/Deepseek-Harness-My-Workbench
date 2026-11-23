@@ -414,13 +414,32 @@ PANELS.memory = function (body, meta, head) {
   body.appendChild(tabs);
   body.appendChild(editBox);
   var cur = '§〇';
-  var secs = {};             // 各节正文（load 时从 项目信息.md 解析出来）
+  var secs = {};             // 各节的**手写**正文（load 时从 项目信息.md 解析出来）
+  var autos = {};            // 各节的自动区（派生内容，只读）
+  var titles = {};           // 各节的标题（§三 阅读台账这种，名字在文件里）
   var cardText = '';         // 身份卡正文
   var drafts = {};           // 改过还没存的草稿（按页签存，切页签不丢）
   var health = null;
   var dupNote = '';         // ⚠ 文件里有两段 §〇（只有最后一段算数）
   var trail = null;          // 「留痕」页签里的那条时间线
   var trailTimer = null;     // 停留在这个页签时的自动刷新
+
+  /* 自动区（派生块）：内容是程序按真实数据算出来的 ⇒ 只读，人改不动。
+     规矩跟 lib/memory.mjs 一致：<!-- 自动:<key>:start --> … <!-- 自动:<key>:end --> */
+  var AUTO_RE = /<!--\s*自动:([A-Za-z0-9_.\-]+):start\s*-->([\s\S]*?)<!--\s*自动:\1:end\s*-->/g;
+
+  /** 一节正文 ⇒ 自动区们 + 手写内容。 */
+  function splitAuto(text) {
+    var src = String(text || '');
+    var blocks = [];
+    var re = new RegExp(AUTO_RE.source, 'g');
+    var m;
+    while ((m = re.exec(src))) {
+      blocks.push({ key: m[1], content: String(m[2] || '').replace(/^\n+/, '').replace(/\s+$/, '') });
+    }
+    var manual = src.replace(new RegExp(AUTO_RE.source, 'g'), '').replace(/\n{3,}/g, '\n\n').trim();
+    return { blocks: blocks, manual: manual };
+  }
 
   /**
    * 这个页签该显示什么？
@@ -442,9 +461,26 @@ PANELS.memory = function (body, meta, head) {
     }
   } catch (e) { /* 忽略 */ }
 
+  /** 页签清单：固定那几节 + 文件里多出来的节（如阅读的「§三 阅读台账」）。 */
+  function tabList() {
+    var out = SECTIONS.slice();
+    Object.keys(titles).forEach(function (k) {
+      if (out.some(function (s) { return s.key === k; })) return;
+      out.push({ key: k, name: titles[k] || k, hint: '这一节来自 项目信息.md' });
+    });
+    out.sort(function (a, b) {
+      var ai = out.indexOf(a), bi = out.indexOf(b);
+      var rank = ['§〇', '§一', '§二', '§三', '§四', '§五', '§六'];
+      var ra = rank.indexOf(a.key), rb = rank.indexOf(b.key);
+      if (ra >= 0 && rb >= 0) return ra - rb;
+      return ai - bi;
+    });
+    return out;
+  }
+
   function renderTabs() {
     tabs.innerHTML = '';
-    SECTIONS.forEach(function (s) {
+    tabList().forEach(function (s) {
       var b = wbEl('button', 'mem-tab' + (cur === s.key ? ' active' : ''), s.key + ' ' + s.name);
       b.title = s.hint;
       b.addEventListener('click', function () { cur = s.key; renderTabs(); renderBody(); });
@@ -458,6 +494,13 @@ PANELS.memory = function (body, meta, head) {
     log.title = '这个场景里发生过的一切：谁 · 做了什么 · 动了哪一样东西';
     log.addEventListener('click', function () { cur = '留痕'; renderTabs(); renderBody(); });
     tabs.appendChild(log);
+    // 页签排成一行（窄面板里横向滚）⇒ 当前页签可能在可视范围外 ⇒ 滚进来
+    var act = tabs.querySelector('.mem-tab.active');
+    if (act && tabs.scrollWidth > tabs.clientWidth) {
+      var l = act.offsetLeft, w = act.offsetWidth, sw = tabs.clientWidth;
+      if (l < tabs.scrollLeft) tabs.scrollLeft = Math.max(0, l - 8);
+      else if (l + w > tabs.scrollLeft + sw) tabs.scrollLeft = l + w - sw + 8;
+    }
   }
 
   function renderBody() {
@@ -478,6 +521,16 @@ PANELS.memory = function (body, meta, head) {
       return;
     }
     if (trailTimer) { clearInterval(trailTimer); trailTimer = null; }
+    // ★ 自动区（派生内容）：只读，画在输入框上面 —— 它的内容是工作台按真实数据
+    //   算出来的，人改不动（保存时服务端也会用磁盘上的原自动区盖回去）。
+    (autos[cur] || []).forEach(function (b) {
+      var box2 = wbEl('div', 'mem-auto');
+      box2.appendChild(wbEl('div', 'mem-auto-tag', '自动 · 只读（按真实数据算的）'));
+      var bd = wbEl('div', 'mem-auto-body');
+      bd.appendChild(wbMdTable(b.content));
+      box2.appendChild(bd);
+      editBox.appendChild(box2);
+    });
     var ta = wbEl('textarea', 'note-area');
     ta.value = textFor(cur);
     ta.spellcheck = false;
@@ -519,12 +572,19 @@ PANELS.memory = function (body, meta, head) {
       var dup = (text.match(/^##\s*§〇(?![〇一二三四五六七八九十])/gm) || []).length;
       dupNote = dup > 1 ? ('文件里有 ' + dup + ' 段 §〇（只有最后一段算数）· 修：node dev/去重交接.mjs') : '';
       secs = {};
+      autos = {};
+      titles = {};
       var re = /^##\s*(§[〇一二三四五六七八九十]+)\s*(.*)$/gm;
       var m, keys = [];
       while ((m = re.exec(text))) keys.push({ key: m[1], title: m[2], start: m.index, bodyStart: re.lastIndex });
       for (var i = 0; i < keys.length; i++) {
         var end = i + 1 < keys.length ? keys[i + 1].start : text.length;
-        secs[keys[i].key] = text.slice(keys[i].bodyStart, end).replace(/^\n+/, '').replace(/\n+$/, '');
+        var raw = text.slice(keys[i].bodyStart, end);
+        // ⚠ 只有**最后**一段同名节算数（前面那段是死字）—— 跟服务端一致。
+        var sp = splitAuto(raw);
+        secs[keys[i].key] = sp.manual;
+        autos[keys[i].key] = sp.blocks;
+        titles[keys[i].key] = keys[i].title;
       }
       cardText = r.card || '';
       renderTabs();
@@ -532,7 +592,17 @@ PANELS.memory = function (body, meta, head) {
     });
   }
   load();
-  return function () { if (trailTimer) { clearInterval(trailTimer); trailTimer = null; } };
+  // 别的面板改了项目信息（如书架更新了阅读进度 ⇒ 服务端重算了自动区）
+  //   ⇒ 这边重新拉一遍，别让人看着过期数据。
+  function onMemChanged(e) {
+    if (e && e.detail && e.detail.scene && e.detail.scene !== scene) return;
+    load();
+  }
+  window.addEventListener('wb:mem-changed', onMemChanged);
+  return function () {
+    if (trailTimer) { clearInterval(trailTimer); trailTimer = null; }
+    window.removeEventListener('wb:mem-changed', onMemChanged);
+  };
 };
 
 /* ── 2b. note：便签（写在场景自己的 项目记忆/ 下） ───────────────── */
@@ -1338,7 +1408,31 @@ PANELS.project = function (body, meta, head) {
   acts2.appendChild(hint);
   wrap.appendChild(acts2);
 
-  var list = wbEl('div', 'proj-list');
+  /* ── 文件树（VS Code 那种：文件夹能展开、能新建） ─────────────── */
+  var tools = wbEl('div', 'proj-tools');
+  var mkDir = wbEl('button', 'chip', '＋ 新建文件夹');
+  var mkFile = wbEl('button', 'chip', '＋ 新建文件');
+  var refresh = wbEl('button', 'chip', '⟳ 刷新');
+  tools.appendChild(mkDir);
+  tools.appendChild(mkFile);
+  tools.appendChild(refresh);
+  var selTip = wbEl('span', 'proj-hint', '');
+  tools.appendChild(selTip);
+  wrap.appendChild(tools);
+
+  /* ── 面包屑 + 搜索（深目录一层层点太费劲 ⇒ 加这两个） ────────── */
+  var crumb = wbEl('div', 'proj-crumb');
+  var searchBox = wbEl('div', 'proj-search');
+  var searchInput = wbEl('input', 'ft-search');
+  searchInput.type = 'search';
+  searchInput.placeholder = '搜文件名（整个项目底下）';
+  var searchRes = wbEl('div', 'proj-search-res');
+  searchBox.appendChild(searchInput);
+  searchBox.appendChild(searchRes);
+
+  var list = wbEl('div', 'proj-list ftree');
+  wrap.appendChild(crumb);
+  wrap.appendChild(searchBox);
   wrap.appendChild(list);
 
   /* ── 上传：把文件拖进来，或点按钮选 ─────────────────────────── */
@@ -1381,6 +1475,9 @@ PANELS.project = function (body, meta, head) {
         var cut = rel.lastIndexOf('/');
         if (cut > 0) { dir = rel.slice(0, cut); fname = rel.slice(cut + 1); }
       }
+      // 落到「选中的那个文件夹」里（相对基准目录）
+      var into = relToBase(uploadTarget || selected || treeRoot);
+      if (into) dir = into + (dir ? '/' + dir : '');
       var q = '?scene=' + encodeURIComponent(sceneId)
         + '&name=' + encodeURIComponent(fname)
         + (dir ? '&dir=' + encodeURIComponent(dir) : '');
@@ -1425,38 +1522,351 @@ PANELS.project = function (body, meta, head) {
     dirEl.value = '';
   });
 
+  /* ── 树：加载 / 展开 / 新建 ─────────────────────────────────── */
+  var base = '';          // 上传和新建的基准目录（项目目录，或它的项目记忆目录）
+  var treeRoot = '';      // 树根目录（= base；没绑项目目录时就是项目记忆目录）
+  var selected = '';      // 当前选中的文件夹（新建的东西放这儿）
+  var rowsByPath = {};    // 路径 → 行元素（要往某个文件夹里塞东西时找得到它的容器）
+  var uploadTarget = '';  // 上传落到哪个文件夹
+
+  function sizeText(n) {
+    n = Number(n) || 0;
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' K';
+    return (n / 1024 / 1024).toFixed(1) + ' M';
+  }
+
+  /** 绝对路径 → 相对基准目录（上传接口只收相对路径）。 */
+  function relToBase(abs) {
+    if (!abs || !base) return '';
+    if (abs === base) return '';
+    if (abs.indexOf(base + '/') === 0) return abs.slice(base.length + 1);
+    return '';
+  }
+
+  /** 选中一个文件夹（新建 / 上传的落点）。 */
+  function selectDir(p) {
+    selected = p || '';
+    Object.keys(rowsByPath).forEach(function (k) {
+      rowsByPath[k].classList.toggle('sel', k === selected);
+    });
+    selTip.textContent = !selected ? '' : (selected === treeRoot ? '落点：根目录' : '落点：' + selected);
+    renderCrumb();
+  }
+
+  /** 面包屑：当前树根 + 选中的目录。
+   *  点一段 ⇒ 以它为根重新看（比一层层点开快）。 */
+  function renderCrumb() {
+    if (!crumb) return;
+    crumb.innerHTML = '';
+    var cur = selected || treeRoot || '';
+    var segs = cur.split('/').filter(Boolean);
+    var baseSegs = (base || '').split('/').filter(Boolean);
+    // 项目目录之前的那几段没意义（都是 /Users/…），不显示
+    var start = 0;
+    for (var i = 0; i < baseSegs.length; i++) {
+      if (segs[i] === baseSegs[i]) start = i + 1; else break;
+    }
+    crumb.appendChild(wbEl('span', 'crumb-sep', '／'));
+    if (!segs.length) {
+      crumb.appendChild(wbEl('span', 'crumb-dim', '（还没绑目录）'));
+      return;
+    }
+    var acc = '';
+    segs.forEach(function (seg, i) {
+      acc += '/' + seg;
+      var inBase = i < start;
+      var b = wbEl('button', 'crumb' + (i === segs.length - 1 ? ' on' : ''), seg);
+      b.title = acc + (inBase ? '（项目目录）' : '');
+      b.addEventListener('click', function () {
+        if (inBase) { load(); return; }      // 回到项目目录根
+        loadTree(acc);                       // 以它为根看
+      });
+      crumb.appendChild(b);
+    });
+  }
+
+  /** 按文件名搜（整个项目底下）。命中目录 ⇒ 以它为根看；命中文件 ⇒ 预览。 */
+  var searchTimer = null;
+  function runSearch() {
+    var kw = searchInput.value.trim();
+    searchRes.innerHTML = '';
+    if (!kw) return;
+    var scope = treeRoot || base;
+    if (!scope) return;
+    wbApi('GET', '/api/fs/search?dir=' + encodeURIComponent(scope) + '&q=' + encodeURIComponent(kw))
+      .then(function (r) {
+        searchRes.innerHTML = '';
+        if (!r || !r.ok) {
+          searchRes.appendChild(wbEl('div', 'ftree-empty', '搜不了：' + (r && r.error || '未知')));
+          return;
+        }
+        if (!r.rows.length) {
+          searchRes.appendChild(wbEl('div', 'ftree-empty', '没找到「' + kw + '」'));
+          return;
+        }
+        r.rows.forEach(function (n) {
+          var row = wbEl('div', 'ftree-row is-file ftree-hit');
+          row.appendChild(wbEl('span', 'ftree-chev', ''));
+          row.appendChild(wbEl('span', 'ftree-icon', n.isDir ? '📁' : '📄'));
+          row.appendChild(wbEl('span', 'ftree-name', n.rel || n.name));
+          row.title = n.path;
+          row.addEventListener('click', function () {
+            if (n.isDir) loadTree(n.path);
+            else previewFile(n.path, n.name);
+          });
+          searchRes.appendChild(row);
+        });
+        if (r.truncated) searchRes.appendChild(wbEl('div', 'ftree-empty', '（结果太多，只列了前面一部分）'));
+      });
+  }
+  searchInput.addEventListener('input', function () {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(runSearch, 250);
+  });
+
+  /** 某个文件夹的「子项容器」（根目录的就是列表本身）。 */
+  function kidsOf(dir) {
+    if (!dir || dir === treeRoot) return list;
+    var row = rowsByPath[dir];
+    return row ? row.__kids : null;
+  }
+
+  /** 画一行（文件夹 / 文件）。 */
+  function nodeEl(n, depth) {
+    var node = wbEl('div', 'ftree-node');
+    var row = wbEl('div', 'ftree-row ' + (n.isDir ? 'is-dir' : 'is-file'));
+    row.setAttribute('data-path', n.path);
+    row.setAttribute('data-name', n.name);
+    row.style.paddingLeft = (8 + depth * 15) + 'px';
+
+    var chev = wbEl('span', 'ftree-chev', n.isDir ? '▸' : '');
+    row.appendChild(chev);
+    var icon = wbEl('span', 'ftree-icon', n.isDir ? '📁' : '📄');
+    row.appendChild(icon);
+    row.appendChild(wbEl('span', 'ftree-name', n.name));
+    if (!n.isDir) row.appendChild(wbEl('span', 'ftree-size', sizeText(n.size)));
+
+    node.appendChild(row);
+
+    if (n.isDir) {
+      var kids = wbEl('div', 'ftree-kids');
+      kids.style.display = 'none';
+      kids.__dir = n.path;
+      kids.__depth = depth + 1;
+      node.appendChild(kids);
+
+      row.__kids = kids;
+      row.__open = false;
+      row.__loaded = false;
+      rowsByPath[n.path] = row;
+      kids.__row = row;
+
+      chev.addEventListener('click', function (e) {
+        e.stopPropagation();
+        selectDir(n.path);
+        toggle(row);
+      });
+      row.addEventListener('click', function () {
+        selectDir(n.path);
+        toggle(row);
+      });
+      // 右键：这个文件夹里能干什么
+      wbBindMenu(row, [
+        { id: 'mkdir', label: '新建文件夹…' },
+        { id: 'mkfile', label: '新建文件…' },
+        { id: 'upload', label: '上传文件到此处…' },
+        { separator: true },
+        { id: 'session', label: '在这里开一条会话' },
+      ], function (id) {
+        selectDir(n.path);
+        if (id === 'mkdir') startCreate(n.path, kids, 'dir');
+        else if (id === 'mkfile') startCreate(n.path, kids, 'file');
+        else if (id === 'upload') { uploadTarget = n.path; inputEl.click(); }
+        else if (id === 'session') openSession(n.path);
+      });
+    } else {
+      row.addEventListener('click', function () { previewFile(n.path, n.name); });
+    }
+    return node;
+  }
+
+  /** 展开 / 收起一个文件夹（没加载过就先拉一层）。 */
+  function toggle(row) {
+    var kids = row.__kids;
+    if (!kids) return;
+    var chev = row.querySelector('.ftree-chev');
+    var icon = row.querySelector('.ftree-icon');
+    if (row.__open) {
+      row.__open = false;
+      kids.style.display = 'none';
+      chev.textContent = '▸';
+      icon.textContent = '📁';
+      return;
+    }
+    row.__open = true;
+    kids.style.display = '';
+    chev.textContent = '▾';
+    icon.textContent = '📂';
+    if (row.__loaded) return;
+    row.__loaded = true;
+    var p = row.getAttribute('data-path');
+    wbApi('GET', '/api/fs/tree?dir=' + encodeURIComponent(p) + '&depth=1').then(function (r) {
+      row.__loaded = false;                       // 失败了下次还能重试
+      if (!r || !r.ok) {
+        kids.appendChild(wbEl('div', 'ftree-empty', '读不了：' + (r && r.error || '未知')));
+        return;
+      }
+      fillKids(kids, r.rows);
+    });
+  }
+
+  /** 把一个目录下的内容画进容器。 */
+  function fillKids(container, rows) {
+    container.innerHTML = '';
+    var depth = container.__depth || 0;
+    if (!rows || !rows.length) {
+      container.appendChild(wbEl('div', 'ftree-empty', '（空）'));
+      return;
+    }
+    rows.forEach(function (n) { container.appendChild(nodeEl(n, depth)); });
+  }
+
+  /** 重新拉一个目录的内容（建完东西后刷新那一块）。 */
+  function refreshKids(container) {
+    var dir = container && container.__dir;
+    if (!dir) return;
+    wbApi('GET', '/api/fs/tree?dir=' + encodeURIComponent(dir) + '&depth=1').then(function (r) {
+      if (!r || !r.ok) return;
+      fillKids(container, r.rows);
+    });
+  }
+
+  /**
+   * 新建文件夹 / 新建文件：像 VS Code 那样，在目标文件夹下面冒出一行输入框。
+   */
+  function startCreate(parentPath, container, kind) {
+    if (!container) { wbToast('先在树上点一个文件夹', true); return; }
+    // 目标文件夹是收着的 ⇒ 先展开它，不然新建的东西看不见
+    if (container.__row && container.style.display === 'none') {
+      container.style.display = '';
+      container.__row.__open = true;
+      var c = container.__row.querySelector('.ftree-chev');
+      var ic = container.__row.querySelector('.ftree-icon');
+      if (c) c.textContent = '▾';
+      if (ic) ic.textContent = '📂';
+    }
+    var row = wbEl('div', 'ftree-row is-new');
+    row.style.paddingLeft = '20px';
+    row.appendChild(wbEl('span', 'ftree-icon', kind === 'dir' ? '📁' : '📄'));
+    var inp = wbEl('input', 'ftree-input');
+    inp.placeholder = kind === 'dir' ? '文件夹名（回车确认）' : '文件名（回车确认）';
+    row.appendChild(inp);
+    container.appendChild(row);
+    inp.focus();
+
+    var done = false;
+    function cancel() { if (done) return; done = true; row.remove(); }
+    function commit() {
+      if (done) return;
+      var name = inp.value.trim();
+      if (!name) { cancel(); return; }
+      done = true;
+      wbApi('POST', '/api/fs/create', {
+        scene: sceneId, dir: parentPath, name: name, kind: kind,
+      }).then(function (r) {
+        if (!r || !r.ok) {
+          wbToast('建不出来：' + (r && r.error || '未知'), true);
+          row.remove();
+          return;
+        }
+        wbToast('建好了：' + r.name);
+        wbAct(sceneId, kind === 'dir' ? '新建文件夹' : '新建文件', r.path, { 位置: parentPath });
+        refreshKids(container);
+      }).catch(function (e) {
+        wbToast('建不出来：' + (e && e.message || e), true);
+        row.remove();
+      });
+    }
+    inp.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); }
+      else if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+    });
+    inp.addEventListener('blur', function () { setTimeout(function () { if (!done) commit(); }, 200); });
+  }
+
+  /** 点文件 ⇒ 底下开个小预览（不想跳出去就能瞄一眼）。 */
+  function previewFile(p, name) {
+    var box = wrap.querySelector('.ftree-preview');
+    if (!box) {
+      box = wbEl('div', 'ftree-preview');
+      wrap.appendChild(box);
+    }
+    box.style.display = '';
+    box.textContent = '读 ' + name + ' …';
+    wbApi('GET', '/api/fs/read?path=' + encodeURIComponent(p)).then(function (r) {
+      if (!r || !r.ok) { box.textContent = '读不了：' + (r && r.error || '未知'); return; }
+      var text = String(r.text || '');
+      var lines = text.split('\n');
+      var cut = lines.length > 200;
+      box.textContent = '── ' + name + '（' + sizeText(r.size) + '）──\n'
+        + lines.slice(0, 200).join('\n') + (cut ? '\n…（后面还有，滚下去看）' : '');
+      box.scrollTop = 0;
+    });
+  }
+
+  /** 以某个目录为工作目录，开一条新会话。 */
+  function openSession(cwd) {
+    if (!cwd) { wbToast('先选一个文件夹', true); return; }
+    var sc = (window.__WB_SCENES || []).filter(function (s) { return s.id === sceneId; })[0];
+    var title = (sc && sc.name ? sc.name : sceneId) + '·' + cwd.split('/').pop();
+    wbApi('POST', '/api/sessions/create', { scene: sceneId, title: title, cwd: cwd }).then(function (r) {
+      if (!r || !r.ok) { wbToast('开会话失败：' + (r && r.error), true); return; }
+      hint.textContent = '新会话已绑上（' + r.sessionId.slice(0, 20) + '…），工作目录 = ' + cwd;
+      wbToast('开好了，工作目录是 ' + cwd);
+    }).catch(function (e) { wbToast('开会话失败：' + (e && e.message || e), true); });
+  }
+
   function load() {
     wbApi('GET', '/api/scene/project?id=' + encodeURIComponent(sceneId)).then(function (r) {
       if (!r || !r.ok) { cur.textContent = '读不到：' + (r && r.error || '未知'); return; }
       root = r.projectRoot || '';
-      if (!root) {
-        cur.textContent = '还没绑项目目录';
-        cur.className = 'proj-cur off';
-        input.value = '';
+      base = r.base || root || '';
+      input.value = root;
+
+      if (root && !r.exists) {
+        cur.className = 'proj-cur';
+        cur.textContent = root + '（⚠ 目录不在了）';
+        acts.diag.textContent = '目录缺失';
         list.innerHTML = '';
+        list.appendChild(wbEl('div', 'todo-empty', '绑的目录不在了 —— 重新绑一个，或先建一个。'));
         return;
       }
-      cur.className = 'proj-cur';
-      cur.textContent = r.exists ? root : root + '（⚠ 目录不在了）';
-      input.value = root;
-      acts.diag.textContent = r.exists ? '已绑定' : '目录缺失';
-      if (r.exists) browse(root);
+      // 没绑项目目录 ⇒ 看它自己的「项目记忆」目录（照样能建文件夹）
+      var rootPath = root || base;
+      cur.className = root ? 'proj-cur' : 'proj-cur off';
+      cur.textContent = root
+        ? root
+        : base + '（还没绑项目目录：现在看的是它自己的项目记忆目录）';
+      acts.diag.textContent = root ? '已绑定' : '未绑目录';
+      loadTree(rootPath);
     });
   }
 
-  function browse(dir) {
-    wbApi('GET', '/api/fs/list?dir=' + encodeURIComponent(dir)).then(function (r) {
-      list.innerHTML = '';
-      if (!r || !r.ok) { list.appendChild(wbEl('div', 'todo-empty', '读不了：' + (r && r.error || '未知'))); return; }
+  function loadTree(dir) {
+    list.innerHTML = '';
+    rowsByPath = {};
+    treeRoot = dir;
+    list.__dir = dir;
+    list.__depth = 0;
+    wbApi('GET', '/api/fs/tree?dir=' + encodeURIComponent(dir) + '&depth=1').then(function (r) {
+      if (!r || !r.ok) {
+        list.appendChild(wbEl('div', 'todo-empty', '读不了：' + (r && r.error || '未知')));
+        return;
+      }
       acts.diag.textContent = r.rows.length + ' 项';
-      if (!r.rows.length) { list.appendChild(wbEl('div', 'todo-empty', '空目录')); return; }
-      r.rows.slice(0, 40).forEach(function (row) {
-        var line = wbEl('div', 'file-row' + (row.isDir ? ' dir' : ''));
-        line.appendChild(wbEl('span', 'file-name', row.name));
-        if (!row.isDir) line.appendChild(wbEl('span', 'file-size', row.size + ' B'));
-        line.addEventListener('click', function () { if (row.isDir) browse(row.path); });
-        list.appendChild(line);
-      });
+      fillKids(list, r.rows);
+      selectDir(dir);
     });
   }
 
@@ -1481,14 +1891,19 @@ PANELS.project = function (body, meta, head) {
 
   mkSession.addEventListener('click', function () {
     if (!root) { wbToast('先绑一个项目目录', true); return; }
-    var sc = (window.__WB_SCENES || []).filter(function (s) { return s.id === sceneId; })[0];
-    var title = (sc && sc.name ? sc.name : sceneId) + '·项目';
-    wbApi('POST', '/api/sessions/create', { scene: sceneId, title: title, cwd: root }).then(function (r) {
-      if (!r || !r.ok) { wbToast('开会话失败：' + (r && r.error), true); return; }
-      hint.textContent = '新会话已绑上（' + r.sessionId.slice(0, 20) + '…），工作目录 = ' + root;
-      wbToast('开好了，工作目录是项目目录');
-    }).catch(function (e) { wbToast('开会话失败：' + (e && e.message || e), true); });
+    openSession(root);
   });
+
+  /* ── 工具条：新建文件夹 / 新建文件 / 刷新 ───────────────────── */
+  mkDir.addEventListener('click', function () {
+    var dir = selected || treeRoot;
+    startCreate(dir, kidsOf(dir), 'dir');
+  });
+  mkFile.addEventListener('click', function () {
+    var dir = selected || treeRoot;
+    startCreate(dir, kidsOf(dir), 'file');
+  });
+  refresh.addEventListener('click', function () { load(); });
 
   load();
   return function () { /* noop */ };
@@ -1700,6 +2115,8 @@ PANELS.bookshelf = function (body, meta, head) {
           if (!r || !r.ok) throw new Error((r && r.error) || '更新失败');
           wbToast('进度更新了：' + page + ' 页');
           load();
+          // 服务端已经把项目信息的自动区重算了 ⇒ 通知「项目信息」面板刷新
+          window.dispatchEvent(new CustomEvent('wb:mem-changed', { detail: { scene: sceneId } }));
           return { ok: true };
         });
       },
@@ -1728,6 +2145,7 @@ PANELS.bookshelf = function (body, meta, head) {
           if (!r || !r.ok) throw new Error((r && r.error) || '加不进去');
           wbToast('加好了：' + r.path);
           load();
+          window.dispatchEvent(new CustomEvent('wb:mem-changed', { detail: { scene: sceneId } }));
           return { ok: true };
         });
       },
@@ -1916,6 +2334,51 @@ function wbMd(md) {
     if (t.startsWith('|')) { box.appendChild(wbEl('div', 'md-tb', t)); return; }
     box.appendChild(wbEl('div', 'md-p', t.replace(/^`this\.\w+\s*$/, '')));
   });
+  return box;
+}
+
+/**
+ * markdown → 元素，**表格画成真表格**（wbMd 把 | 行画成纯文本，太难读）。
+ * 台账那种一行一列的东西，用这个。
+ */
+function wbMdTable(md) {
+  var box = wbEl('div', 'md md-tbl-wrap');
+  var lines = String(md || '').split(/\r?\n/);
+  var i = 0;
+  while (i < lines.length) {
+    var t = lines[i].trim();
+    if (!t.startsWith('|')) {
+      // 非表格的一段 ⇒ 攒起来交给 wbMd
+      var chunk = [];
+      while (i < lines.length && !lines[i].trim().startsWith('|')) { chunk.push(lines[i]); i++; }
+      if (chunk.join('').trim()) box.appendChild(wbMd(chunk.join('\n')));
+      continue;
+    }
+    // 一段连续的 | 行 ⇒ 一张表
+    var rows = [];
+    while (i < lines.length && lines[i].trim().startsWith('|')) {
+      var raw = lines[i].trim().replace(/^\|/, '').replace(/\|$/, '');
+      var cells = raw.split('|').map(function (c) { return c.trim().replace(/\\\|/g, '|'); });
+      // |---|---| 这种分隔行不算数据
+      if (!cells.every(function (c) { return /^:?-{2,}:?$/.test(c); })) rows.push(cells);
+      i++;
+    }
+    if (!rows.length) continue;
+    var table = wbEl('table', 'md-tbl');
+    var thead = wbEl('thead');
+    var trh = wbEl('tr');
+    rows[0].forEach(function (c) { trh.appendChild(wbEl('th', '', c)); });
+    thead.appendChild(trh);
+    table.appendChild(thead);
+    var tbody = wbEl('tbody');
+    rows.slice(1).forEach(function (r) {
+      var tr = wbEl('tr');
+      r.forEach(function (c) { tr.appendChild(wbEl('td', '', c)); });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    box.appendChild(table);
+  }
   return box;
 }
 

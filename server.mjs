@@ -21,8 +21,8 @@ import { fileURLToPath } from 'node:url';
 
 import { PATHS, SERVER, ENGINE, PANEL_PORT, ensureDirs, readJson, writeJson } from './lib/config.mjs';
 import { loadScenes, getScene, resolveScene } from './lib/scenes.mjs';
+import { allCategories, saveCategories } from './lib/categories.mjs';
 import { proxyHttp, proxyUpgrade, probe, exchangeToken, rpc } from './lib/engine.mjs';
-import * as mem from './lib/memory.mjs';
 import * as dispatch from './lib/dispatch.mjs';
 import * as loadGate from './lib/loadgate.mjs';
 import * as gpu from './lib/gpu.mjs';
@@ -33,8 +33,24 @@ import * as dashboard from './lib/dashboard.mjs';
 import * as doctor from './lib/doctor.mjs';
 import * as writeapi from './lib/writeapi.mjs';
 import * as panelPorts from './lib/panelports.mjs';
-import * as vault from './lib/vault.mjs';
 import { findWorkspace } from './lib/dsh-cli.mjs';
+
+/* ── actlog：操作留痕的底座 ────────────────────────────────────────
+ *
+ * ⚠ 这里为什么不用一句 import 就完事：
+ *   插件模式里 server.mjs 是带 ?wb=… **每次请求重新** import 的，
+ *   但 ESM 按 URL 缓存模块 ⇒ 相对 import 的 ./lib/*.mjs 仍是**第一次那份** ——
+ *   改了 lib/actlog.mjs 也不生效（界面报「actlog.xxx is not a function」）。
+ *   借 server.mjs 自己的那个时间戳 import 它 ⇒ 每次请求都拿到最新代码。
+ */
+const STAMP = import.meta.url.includes('?') ? '?' + import.meta.url.split('?')[1] : '';
+const actlog = await import('./lib/actlog.mjs' + STAMP);
+// 记忆读写同理（改了 lib/memory.mjs 也要立刻生效）
+const mem = await import('./lib/memory.mjs' + STAMP);
+// 仓库读写同理（改了 lib/vault.mjs 也要立刻生效）
+const vault = await import('./lib/vault.mjs' + STAMP);
+// 派生器（项目信息的自动区）同理：改了 lib/derive.mjs 也要立刻生效
+const derive = await import('./lib/derive.mjs' + STAMP);
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -271,6 +287,197 @@ function handleFsRead(res, p) {
   sendJson(res, 200, { ok: true, path: abs, size: st.size, text: fs.readFileSync(abs, 'utf8') });
 }
 
+/* ── 树：一次列出一棵子树（VS Code 那种文件夹树） ─────────────────
+ *  · 深度上限 + 节点上限 —— 免得一个 node_modules 把面板撑爆
+ *  · 软链不进树（防环，也防顺着软链跑到别人的地盘）
+ *  · . 开头的跳过（和 handleFsList 一个口径）
+ */
+const FS_TREE_MAX_DEPTH = 6;
+const FS_TREE_MAX_NODES = 3000;
+
+function fsTreeChildren(abs, depth, budget) {
+  let names;
+  try { names = fs.readdirSync(abs); } catch (e) { return []; }
+  const out = [];
+  for (const name of names) {
+    if (name.startsWith('.')) continue;
+    if (budget.n <= 0) { budget.cut = true; break; }
+    const full = path.join(abs, name);
+    let st;
+    try { st = fs.lstatSync(full); } catch (e) { continue; }
+    if (st.isSymbolicLink()) continue;              // 软链不进树
+    const isDir = st.isDirectory();
+    if (isDir && !fsAllowed(full)) continue;        // 不在允许范围内的目录不进树
+    const node = { name, path: full, isDir, size: st.size, mtime: st.mtimeMs };
+    budget.n--;
+    if (isDir) {
+      if (depth > 0) {
+        node.children = fsTreeChildren(full, depth - 1, budget);
+      } else {
+        node.children = [];                         // 到深度上限：点开时前端再拉一层
+        node.lazy = true;
+      }
+    }
+    out.push(node);
+  }
+  out.sort((a, b) => (b.isDir - a.isDir) || a.name.localeCompare(b.name, 'zh'));
+  return out;
+}
+
+function handleFsTree(res, dir, depth) {
+  const abs = fsResolve(dir || '.');
+  if (!abs) { sendJson(res, 403, { ok: false, error: '这个目录不在允许范围内' }); return; }
+  let st;
+  try { st = fs.statSync(abs); } catch (e) {
+    sendJson(res, 404, { ok: false, error: '目录不存在' }); return;
+  }
+  if (!st.isDirectory()) { sendJson(res, 400, { ok: false, error: '那不是一个目录' }); return; }
+  const d = Math.max(1, Math.min(Number(depth) || 1, FS_TREE_MAX_DEPTH));
+  const budget = { n: FS_TREE_MAX_NODES, cut: false };
+  const rows = fsTreeChildren(abs, d, budget);
+  sendJson(res, 200, { ok: true, dir: abs, depth: d, truncated: budget.cut, rows });
+}
+
+/* ── 搜索：在某个目录里按文件名找（深目录一层层点太费劲 ⇒ 加这个） ──
+ * · 递归往下找，深度和条数都有上限（免得一个 node_modules 拖死）
+ * · .git / node_modules 这类目录**不进去**（那儿全是噪声）
+ * · 软链不进（跟树一个口径，防环）
+ * · 只读 —— 走的是同一套 fsResolve / fsAllowed 白名单
+ */
+const FS_SEARCH_MAX_DEPTH = 8;
+const FS_SEARCH_MAX_ROWS = 120;
+const FS_SEARCH_SKIP = new Set([
+  '.git', 'node_modules', '.next', '.nuxt', 'dist', 'build',
+  '.cache', 'coverage', '.venv', '__pycache__',
+]);
+
+function handleFsSearch(res, dir, q, max) {
+  const abs = fsResolve(dir || '.');
+  if (!abs) { sendJson(res, 403, { ok: false, error: '这个目录不在允许范围内' }); return; }
+  const kw = String(q || '').trim().toLowerCase();
+  if (!kw) { sendJson(res, 200, { ok: true, dir: abs, q: '', rows: [] }); return; }
+  const limit = Math.max(1, Math.min(Number(max) || FS_SEARCH_MAX_ROWS, FS_SEARCH_MAX_ROWS));
+  const rows = [];
+  let cut = false;
+
+  const walk = (cur, depth) => {
+    if (rows.length >= limit) { cut = true; return; }
+    let names;
+    try { names = fs.readdirSync(cur); } catch (e) { return; }
+    for (const name of names) {
+      if (rows.length >= limit) { cut = true; return; }
+      if (name.startsWith('.')) continue;
+      const full = path.join(cur, name);
+      let st;
+      try { st = fs.lstatSync(full); } catch (e) { continue; }
+      if (st.isSymbolicLink()) continue;              // 软链不进
+      const isDir = st.isDirectory();
+      if (isDir && !fsAllowed(full)) continue;        // 不在允许范围内的目录不进
+      if (name.toLowerCase().includes(kw)) {
+        rows.push({
+          path: full, name, isDir, size: st.size, mtime: st.mtimeMs,
+          rel: path.relative(abs, full),
+        });
+      }
+      if (!isDir) continue;
+      if (FS_SEARCH_SKIP.has(name)) continue;         // 噪声目录：不进去
+      if (depth >= FS_SEARCH_MAX_DEPTH) continue;
+      walk(full, depth + 1);
+    }
+  };
+  walk(abs, 1);
+
+  // 目录在前、同层按名字排 —— 找目录和找文件的顺序不一样
+  rows.sort((a, b) => (b.isDir - a.isDir) || a.name.localeCompare(b.name, 'zh'));
+  sendJson(res, 200, { ok: true, dir: abs, q: kw, truncated: cut, rows });
+}
+
+/**
+ * 这个角色能往哪两个根里写东西：
+ *   ① 它绑的**项目目录**（真实磁盘上的地盘）
+ *   ② 它的**项目记忆目录**（工作台内，没绑项目目录时的默认落点）
+ */
+function sceneWriteRoots(sc) {
+  const out = [];
+  const pr = String(sc.projectRoot || '').trim();
+  if (pr) out.push(path.resolve(pr));
+  out.push(path.resolve(PATHS.memory, sc.id, '项目记忆'));
+  return out;
+}
+
+/**
+ * 新建文件夹 / 新建文件。
+ * 权限和「上传文件」同一套分档判定（自己的地盘才能建，别人的地盘 = 越界）。
+ */
+function handleFsCreate(res, body) {
+  const scene = String(body.scene || '').trim();
+  const kind = body.kind === 'file' ? 'file' : 'dir';
+  const name = String(body.name || '').trim();
+  const parent = String(body.dir || '').trim();
+  if (!scene) { sendJson(res, 400, { ok: false, error: '要建在哪个场景下？' }); return; }
+  const sc = getScene(scene);
+  if (!sc) { sendJson(res, 404, { ok: false, error: '没有这个场景：' + scene }); return; }
+  if (!name) { sendJson(res, 400, { ok: false, error: '名字不能空' }); return; }
+  if (name === '.' || name === '..' || /[/\\]/.test(name) || name.startsWith('.')) {
+    sendJson(res, 400, { ok: false, error: '名字不对（不能带 / 或反斜杠，也不能以 . 开头）' }); return;
+  }
+  if (!parent) { sendJson(res, 400, { ok: false, error: '要建在哪个目录里？' }); return; }
+
+  const abs = path.resolve(parent);
+  const roots = sceneWriteRoots(sc);
+  const inRoot = roots.some((r) => abs === r || abs.startsWith(r + path.sep));
+  if (!inRoot) {
+    sendJson(res, 403, { ok: false, error: '只能建在这个角色自己的目录里（项目目录 / 项目记忆）' });
+    return;
+  }
+  if (!fsAllowed(abs)) { sendJson(res, 403, { ok: false, error: '这个目录不在允许范围内' }); return; }
+  let st;
+  try { st = fs.statSync(abs); } catch (e) {
+    sendJson(res, 404, { ok: false, error: '目录不存在：' + abs }); return;
+  }
+  if (!st.isDirectory()) { sendJson(res, 400, { ok: false, error: '那不是一个目录' }); return; }
+
+  const target = path.join(abs, name);
+  if (fs.existsSync(target)) {
+    sendJson(res, 409, { ok: false, error: '已经有同名的东西了：' + name }); return;
+  }
+
+  // 分档判定：工作台内的用相对路径，工作台外的用绝对路径（跟上传同一口径）
+  const rel = (abs === PATHS.root || abs.startsWith(PATHS.root + path.sep))
+    ? path.relative(PATHS.root, abs).split(path.sep).join('/')
+    : abs;
+  const v = authority.check(rel + '/' + name, scene);
+  if (!v.allowed) {
+    sendJson(res, 403, { ok: false, error: v.why, verdict: v });
+    return;
+  }
+
+  try {
+    if (kind === 'dir') fs.mkdirSync(target);
+    else fs.writeFileSync(target, '', 'utf8');
+  } catch (e) {
+    sendJson(res, 500, { ok: false, error: '建不出来：' + (e && e.message || e) });
+    return;
+  }
+
+  // 留痕：人在这儿动了一下手 ⇒ 记一笔（和上传同一口径）
+  const relTarget = rel + '/' + name;
+  writelog.appendApiWrite({
+    path: relTarget, scene, sceneName: sc.name,
+    at: Date.now(), time: Date.now(),
+    op: kind === 'dir' ? 'mkdir' : 'newfile',
+    content: kind === 'file' ? '' : null,
+  });
+  actlog.append({
+    scene, actor: 'user',
+    action: kind === 'dir' ? '新建文件夹' : '新建文件',
+    target: relTarget,
+    detail: { 位置: rel },
+  });
+
+  sendJson(res, 200, { ok: true, kind, name, path: target, dir: abs, verdict: v });
+}
+
 /* ── 面板代理端口池：每个 AI 面板一个独立 origin = 独立 localStorage ── */
 function panelHandler(req, res) {
   const url = new URL(req.url, 'http://x');
@@ -499,6 +706,24 @@ export async function handleRequest(req, res) {
     // ── 文件浏览 ─────────────────────────────────────────────────
     if (p === '/api/fs/list') { handleFsList(res, url.searchParams.get('dir') || '.'); return; }
     if (p === '/api/fs/read') { handleFsRead(res, url.searchParams.get('path') || ''); return; }
+    // ── 文件树（VS Code 那种文件夹树）───────────────────────────
+    if (p === '/api/fs/tree') {
+      handleFsTree(res, url.searchParams.get('dir') || '.', url.searchParams.get('depth') || 1);
+      return;
+    }
+    // ── 按文件名搜（深目录翻文件用）─────────────────────────────
+    if (p === '/api/fs/search') {
+      handleFsSearch(res, url.searchParams.get('dir') || '.',
+        url.searchParams.get('q') || '', url.searchParams.get('max') || '');
+      return;
+    }
+    // ── 新建文件夹 / 新建文件（在角色自己的目录里）────────────────
+    if (p === '/api/fs/create' && req.method === 'POST') {
+      let body = {};
+      try { body = JSON.parse((await readBody(req)) || '{}'); } catch (e) { body = {}; }
+      handleFsCreate(res, body);
+      return;
+    }
 
     // ── 场景顺序（标签栏拖拽换位后持久化） ───────────────────────
     if (p === '/api/scene/order' && req.method === 'POST') {
@@ -547,6 +772,77 @@ export async function handleRequest(req, res) {
       return;
     }
 
+    // ── 分类注册表：新建 / 改名 / 删 / 换顺序 ──────────────────────
+    //    分类的「定义 + 顺序」在 scenarios/_categories.json；
+    //    改名和删分类要连带改场景的 category 字段，否则场景会指向不存在的分类。
+    if (p === '/api/categories' && req.method === 'POST') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      const op = String(body.op || '').trim();
+      const scenes = loadScenes();
+      let names = allCategories(scenes);        // 注册表 + 场景里出现过的
+      /** 把某个分类下的场景改成另一个分类。 */
+      const moveScenes = (from, to) => {
+        scenes.filter((s) => (s.category || '未分类') === from).forEach((s) => {
+          const file = path.join(PATHS.scenarios, s.id + '.json');
+          const raw = readJson(file);
+          if (!raw) return;
+          raw.category = to;
+          writeJson(file, raw);
+        });
+      };
+
+      if (op === 'create') {
+        const name = String(body.name || '').trim();
+        if (!name) { sendJson(res, 400, { ok: false, error: '分类名不能空' }); return; }
+        if (names.indexOf(name) >= 0) { sendJson(res, 400, { ok: false, error: '已经有这个分类了：' + name }); return; }
+        const after = String(body.after || '').trim();
+        const at = after ? names.indexOf(after) : -1;
+        names.splice(at < 0 ? names.length : at + 1, 0, name);
+        saveCategories(names);
+        sendJson(res, 200, { ok: true, categories: names, created: name });
+        return;
+      }
+
+      if (op === 'rename') {
+        const name = String(body.name || '').trim();
+        const next = String(body.newName || '').trim();
+        if (!name || !next) { sendJson(res, 400, { ok: false, error: '分类名不能空' }); return; }
+        if (name === next) { sendJson(res, 200, { ok: true, categories: names }); return; }
+        if (names.indexOf(next) >= 0) { sendJson(res, 400, { ok: false, error: '已经有这个分类了：' + next }); return; }
+        names = names.map((c) => (c === name ? next : c));
+        saveCategories(names);
+        moveScenes(name, next);
+        sendJson(res, 200, { ok: true, categories: names, renamed: name, newName: next });
+        return;
+      }
+
+      if (op === 'delete') {
+        const name = String(body.name || '').trim();
+        if (!name) { sendJson(res, 400, { ok: false, error: '删哪个分类？' }); return; }
+        const moved = scenes.filter((s) => (s.category || '未分类') === name).length;
+        if (moved) moveScenes(name, '未分类');
+        // ⚠ 移完**再**算名单：注册表要反映**现在**真实存在的分类
+        //   （成员去了「未分类」⇒ 它就该进注册表，不能当半幽灵）。
+        names = allCategories(loadScenes()).filter((c) => c !== name);
+        saveCategories(names);
+        sendJson(res, 200, { ok: true, categories: names, deleted: name, moved });
+        return;
+      }
+
+      if (op === 'reorder') {
+        const ids = Array.isArray(body.ids) ? body.ids.map(String) : [];
+        const next = [];
+        ids.forEach((id) => { if (names.indexOf(id) >= 0 && next.indexOf(id) < 0) next.push(id); });
+        names.forEach((c) => { if (next.indexOf(c) < 0) next.push(c); });
+        saveCategories(next);
+        sendJson(res, 200, { ok: true, categories: next });
+        return;
+      }
+
+      sendJson(res, 400, { ok: false, error: '不认识的 op：' + op });
+      return;
+    }
+
     // ── Obsidian 仓库：读你的真实笔记 ──────────────────────────────
     //    角色绑了项目目录 ⇒ 那个目录就是仓库根（Obsidian 库）。
     if (p.startsWith('/api/vault/')) {
@@ -554,19 +850,26 @@ export async function handleRequest(req, res) {
       const scene = String(url.searchParams.get('scene') || '').trim();
       const sc = getScene(scene);
       if (!sc) { sendJson(res, 404, { ok: false, error: '没有这个场景：' + scene }); return; }
-      const root = String(sc.projectRoot || '').trim();
-      if (!root) {
+      const projectRoot = String(sc.projectRoot || '').trim();
+      if (!projectRoot) {
         sendJson(res, 400, { ok: false, error: '「' + sc.name + '」还没绑仓库目录 —— 先在「项目目录」面板里绑定 Obsidian 库 的路径' });
         return;
       }
-      if (!fs.existsSync(root)) {
-        sendJson(res, 400, { ok: false, error: '仓库目录不存在：' + root });
+      if (!fs.existsSync(projectRoot)) {
+        sendJson(res, 400, { ok: false, error: '仓库目录不存在：' + projectRoot });
         return;
       }
+      // ⚠ 仓库根不一定 = projectRoot：场景可能已经绑在库**里面**的子目录上
+      //   （阅读角色绑的是 `Obsidian 库/05-Bookshelf`，而书库路径是相对
+      //   **库根**写的 `05-Bookshelf/书籍list`）⇒ 拼起来会变成
+      //   `05-Bookshelf/05-Bookshelf/书籍list`，读不到书。
+      //   resolveVaultRoot：从 projectRoot 往上逐级试，谁能接住这个路径就是谁。
+      const vaultRoot = (sub) => vault.resolveVaultRoot(projectRoot, sub);
 
       // 书架：列出所有 md（按 status 分组）
       if (action === 'books') {
         const sub = String(url.searchParams.get('dir') || '').trim();
+        const root = vaultRoot(sub);
         const r = vault.readBooks(root, sub);
         if (!r.ok) { sendJson(res, 400, { ok: false, error: r.error }); return; }
         const groups = { 在读: [], 想读: [], 已读完: [] };
@@ -593,6 +896,7 @@ export async function handleRequest(req, res) {
       if (action === 'notes') {
         const sub = String(url.searchParams.get('dir') || '').trim();
         const limit = Number(url.searchParams.get('limit') || 0);
+        const root = vaultRoot(sub);
         const r = vault.readNotes(root, sub, { limit });
         if (!r.ok) { sendJson(res, 400, { ok: false, error: r.error }); return; }
         sendJson(res, 200, { ok: true, root, dir: sub, notes: r.notes, total: r.total });
@@ -602,6 +906,7 @@ export async function handleRequest(req, res) {
       // 读一篇笔记（正文 + frontmatter）
       if (action === 'note') {
         const rel = String(url.searchParams.get('path') || '').trim();
+        const root = vaultRoot(path.dirname(rel));
         const r = vault.readNote(root, rel);
         if (!r.ok) { sendJson(res, 404, { ok: false, error: r.error }); return; }
         sendJson(res, 200, { ok: true, root, path: rel, fm: r.fm, body: r.body });
@@ -613,6 +918,7 @@ export async function handleRequest(req, res) {
         const body = JSON.parse((await readBody(req)) || '{}');
         const rel = String(body.path || '').trim();
         const page = Number(body.currentPage);
+        const root = vaultRoot(path.dirname(rel));
         const note = vault.readNote(root, rel);
         if (!note.ok) { sendJson(res, 404, { ok: false, error: note.error }); return; }
         const total = Number(note.fm.totalPage) || 0;
@@ -622,6 +928,7 @@ export async function handleRequest(req, res) {
         }
         const today = new Date().toISOString().slice(0, 10);
         const oldStatus = String(note.fm.status || '想读');
+        const oldPage = Number(note.fm.currentPage) || 0;
         vault.writeFrontmatterField(root, rel, 'currentPage', page);
         if (total > 0 && page >= total) {
           vault.writeFrontmatterField(root, rel, 'status', '已读完');
@@ -635,6 +942,18 @@ export async function handleRequest(req, res) {
           }
         }
         sendJson(res, 200, { ok: true, path: rel, currentPage: page, totalPage: total });
+        // 留痕：进度改了多少、旧状态是什么，事后查得到
+        actlog.append({
+          scene: sc.id,
+          actor: 'user',
+          action: '更新阅读进度',
+          target: rel,
+          detail: { 页码: oldPage + ' → ' + page, 总页数: total || '?', 状态: oldStatus },
+        });
+        // ★ 项目信息跟着变：书库变了 ⇒ §〇 摘要 / §三 台账 自动重算。
+        //   ⚠ 必须在留痕**之后**跑：派生器靠「最近一次『更新阅读进度』动的是哪本」
+        //     来判定「正在读」—— 先留痕，派生器才看得到这一条。
+        try { derive.deriveScene(sc.id); } catch (e) { /* 派生失败不该让更新进度失败 */ }
         return;
       }
 
@@ -645,6 +964,7 @@ export async function handleRequest(req, res) {
         if (!title) { sendJson(res, 400, { ok: false, error: '要书名' }); return; }
         const dir = String(body.dir || '书籍list').trim();
         const rel = dir + '/' + title.replace(/[/\\]/g, '-') + '.md';
+        const root = vaultRoot(dir);
         const r = vault.createBookNote(root, rel, {
           title,
           author: body.author,
@@ -654,10 +974,64 @@ export async function handleRequest(req, res) {
         });
         if (!r.ok) { sendJson(res, 400, { ok: false, error: r.error }); return; }
         sendJson(res, 200, { ok: true, path: rel });
+        actlog.append({
+          scene: sc.id,
+          actor: 'user',
+          action: '加一本书',
+          target: rel,
+          detail: { 书名: title, 作者: body.author || '—', 总页数: body.totalPage || '?' },
+        });
+        // 书库多了一本 ⇒ §〇 摘要 / §三 台账 跟着重算
+        try { derive.deriveScene(sc.id); } catch (e) { /* 派生失败不该让加书失败 */ }
         return;
       }
 
       sendJson(res, 404, { ok: false, error: '没有这个仓库接口：' + action });
+      return;
+    }
+
+    // ── 操作留痕：这个场景里发生的每一次操作都记一笔 ────────────────
+    //    人的界面操作走 POST（前端埋点）；
+    //    服务端自己改的东西（进度·加书·上传·写记忆）就地留痕 ——
+    //    那样记下来的才是**事实**，不靠前端自觉。
+    if (p === '/api/actlog') {
+      if (req.method === 'GET') {
+        const scene = String(url.searchParams.get('scene') || '').trim();
+        if (!scene) { sendJson(res, 400, { ok: false, error: '要哪个场景的留痕？' }); return; }
+        const limit = Number(url.searchParams.get('limit') || 300);
+        const entries = actlog.read(scene, { limit });
+        const all = url.searchParams.get('ai') === '1'
+          ? entries.concat(actlog.sessionActions(scene)).sort((a, b) => (a.at || 0) - (b.at || 0))
+          : entries;
+        sendJson(res, 200, {
+          ok: true, scene, entries: all,
+          summary: actlog.summarize(all),
+          file: actlog.ledgerFile(scene),
+        });
+        return;
+      }
+      if (req.method === 'POST') {
+        const body = JSON.parse((await readBody(req)) || '{}');
+        const scene = String(body.scene || '').trim();
+        if (!scene) { sendJson(res, 400, { ok: false, error: '留痕要指明场景' }); return; }
+        const entry = actlog.append({
+          scene,
+          actor: body.actor || 'user',
+          action: body.action,
+          target: body.target,
+          detail: body.detail,
+          result: body.result,
+        });
+        sendJson(res, 200, { ok: true, entry });
+        return;
+      }
+    }
+    if (p === '/api/actlog/export' && req.method === 'POST') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      const scene = String(body.scene || '').trim();
+      if (!scene) { sendJson(res, 400, { ok: false, error: '要导出哪个场景？' }); return; }
+      const r = actlog.exportMarkdown(scene);
+      sendJson(res, 200, { ok: true, path: r.path, count: r.count });
       return;
     }
 
@@ -733,6 +1107,13 @@ export async function handleRequest(req, res) {
         bytes: buf.length,
         where: projectRoot ? '项目目录' : '场景记忆目录',
       });
+      actlog.append({
+        scene,
+        actor: 'user',
+        action: '上传文件',
+        target: name,
+        detail: { 字节: buf.length, 去处: projectRoot ? '项目目录' : '场景记忆目录' },
+      });
       return;
     }
 
@@ -752,7 +1133,14 @@ export async function handleRequest(req, res) {
         if (root) {
           try { isDir = fs.statSync(root).isDirectory(); exists = isDir; } catch (e) { exists = false; }
         }
-        sendJson(res, 200, { ok: true, id, projectRoot: root, exists, cwd: process.cwd() });
+        // base = 这个角色的「工作根」：绑了项目目录就是它，没绑就是它的项目记忆目录
+        //   （前端用它算相对路径：上传 / 新建都落在 base 底下）
+        const base = root
+          ? path.resolve(root)
+          : path.resolve(PATHS.memory, sc.id, '项目记忆');
+        // 没绑项目目录时，base 可能还没建出来 ⇒ 先把它建上（树才有根可看）
+        if (!root) { try { fs.mkdirSync(base, { recursive: true }); } catch (e) { /* 建不出来就算了 */ } }
+        sendJson(res, 200, { ok: true, id, projectRoot: root, base, exists, cwd: process.cwd() });
         return;
       }
       if (req.method === 'POST') {
@@ -769,6 +1157,7 @@ export async function handleRequest(req, res) {
           writeJson(file, raw);
           authority.registerScene(id, { name: raw.name, duty: raw.duty, projectRoot: '' });
           sendJson(res, 200, { ok: true, id, projectRoot: '' });
+          actlog.append({ scene: id, actor: 'user', action: '解绑项目目录', target: id });
           return;
         }
         const abs = path.resolve(want.replace(/^~(?=$|\/)/, process.env.HOME || '~'));
@@ -785,6 +1174,7 @@ export async function handleRequest(req, res) {
         writeJson(file, raw);
         const reg = authority.registerScene(id, { name: raw.name, duty: raw.duty, projectRoot: abs });
         sendJson(res, 200, { ok: true, id, projectRoot: abs, territory: reg.ok });
+        actlog.append({ scene: id, actor: 'user', action: '绑定项目目录', target: abs });
         return;
       }
     }
@@ -837,6 +1227,7 @@ export async function handleRequest(req, res) {
         engine: { base: ENGINE.base, up: status.up, status: status.status },
         panelPorts: PANEL_PORTS,
         scenes: loadScenes(),
+        categories: allCategories(loadScenes()),
       });
       return;
     }
@@ -1287,12 +1678,14 @@ export async function handleRequest(req, res) {
       if (body.section) {
         const r = mem.writeSection(body.scene, body.section, body.text);
         sendJson(res, 200, { ok: true, ...r, health: mem.health(body.scene) });
+        actlog.append({ scene: body.scene, actor: 'user', action: '写记忆', target: body.section });
         return;
       }
       if (body.card) {
         fs.mkdirSync(mem.sceneDir(body.scene), { recursive: true });
         fs.writeFileSync(mem.cardPath(body.scene), String(body.text || ''), 'utf8');
         sendJson(res, 200, { ok: true, health: mem.health(body.scene) });
+        actlog.append({ scene: body.scene, actor: 'user', action: '写身份卡', target: body.scene });
         return;
       }
       sendJson(res, 400, { ok: false, error: '要写哪一节？（section）或写身份卡（card）' });
@@ -1331,6 +1724,7 @@ export async function handleRequest(req, res) {
       fs.mkdirSync(path.dirname(abs), { recursive: true });
       fs.writeFileSync(abs, String(body.text || ''), 'utf8');
       sendJson(res, 200, { ok: true });
+      actlog.append({ scene, actor: 'user', action: '写便签', target: dir + '/' + file });
       return;
     }
 

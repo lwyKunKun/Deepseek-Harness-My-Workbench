@@ -434,6 +434,19 @@ body {
 }
 .disp-area { resize: vertical; min-height: 34px; line-height: 1.5; }
 .disp-input:focus, .disp-area:focus { border-color: var(--accent); }
+/* 下拉：底子跟输入框一样，箭头自己画（原生箭头在暗色底上认不出） */
+.disp-select {
+  appearance: none;
+  padding: 5px 26px 5px 9px;
+  cursor: pointer;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--text-dim) 50%),
+    linear-gradient(135deg, var(--text-dim) 50%, transparent 50%);
+  background-position: calc(100% - 14px) 50%, calc(100% - 9px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+.disp-select option { background: var(--bg-soft); color: var(--text); }
 .disp-msg { font-size: var(--fs-xs); white-space: pre-wrap; line-height: 1.6; margin-top: 4px; }
 .disp-msg.ok { color: var(--ok); }
 .disp-msg.bad { color: var(--err); }
@@ -792,21 +805,33 @@ body { overflow: hidden; }
 }
 .side-branch-head:hover { background: var(--bg-panel-hover); }
 .side-twisty { width: 13px; flex: 0 0 auto; text-align: center; color: var(--text-dim); font-size: 11px; }
-.side-cat { font-size: var(--fs-sm); font-weight: 600; letter-spacing: .02em; }
+/* 分类（枝）= 分组容器：更小更淡，像文件树的「小节标题」——
+ * 一眼看出它是容器，不是能点开的菜单项。 */
+.side-cat { font-size: var(--fs-xs); font-weight: 600; letter-spacing: .06em; color: var(--text-dim); }
 .side-count {
   font-size: var(--fs-xs); color: var(--text-dim);
   border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; line-height: 15px;
 }
 .side-kids { margin-left: 8px; padding-left: var(--sp-2); border-left: 1px solid var(--border); }
+/* 空分类里的提示（这个分类还没有角色） */
+.side-kids-empty { padding: 2px var(--sp-2); font-size: var(--fs-xs); color: var(--text-dim); opacity: .7; }
+/* 树底部：建一个新分类（跟分类一样弱化 —— 它是入口，不是内容） */
+.side-add-cat {
+  margin-top: var(--sp-2); padding: 5px var(--sp-2);
+  border-radius: var(--r-sm); cursor: pointer; user-select: none;
+  font-size: var(--fs-xs); color: var(--text-dim);
+  transition: background var(--dur), color var(--dur);
+}
+.side-add-cat:hover { background: var(--bg-panel-hover); color: var(--text); }
 
 .side-leaf {
   display: flex; align-items: center; gap: var(--sp-2);
   padding: 5px var(--sp-2); border-radius: var(--r-sm);
-  cursor: pointer; color: var(--text-dim);
+  cursor: pointer; color: var(--text);   /* 角色 = 内容，比容器亮 */
   transition: background var(--dur), color var(--dur);
 }
-.side-leaf:hover { background: var(--bg-panel-hover); color: var(--text); }
-.side-leaf.active { background: var(--accent-soft); color: var(--text); }
+.side-leaf:hover { background: var(--bg-panel-hover); }
+.side-leaf.active { background: var(--accent-soft); }
 .side-dot { flex: 0 0 auto; font-size: 13px; width: 16px; text-align: center; }
 .side-leaf-name {
   flex: 1 1 auto; min-width: 0; font-size: var(--fs-sm);
@@ -839,8 +864,117 @@ body { overflow: hidden; }
 /* 拖起来时整棵树的边线淡一点，暗示「正在挪」 */
 .side-tree.dragging .side-leaf:not(.dragging) { opacity: .75; }
 
+/* ── 文件树节点（VS Code 的资源管理器那样） ───────────────────── */
+.ftnode-row {
+  display: flex; align-items: center; gap: 4px;
+  padding: 2px var(--sp-2) 2px 4px; border-radius: var(--r-sm);
+  cursor: pointer; color: var(--text-dim);
+  font-size: var(--fs-xs); white-space: nowrap; overflow: hidden;
+}
+.ftnode-row:hover { background: var(--bg-panel-hover); color: var(--text); }
+.ftnode-twisty {
+  flex: 0 0 12px; width: 12px; text-align: center;
+  color: var(--text-dim); font-size: 10px; user-select: none;
+}
+.ftnode-icon { flex: 0 0 auto; font-size: 12px; }
+.ftnode-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ftnode-size { flex: 0 0 auto; font-size: 10px; color: var(--text-dim); opacity: .7; }
+.ftnode-kids { margin-left: 9px; padding-left: 6px; border-left: 1px solid var(--border); }
+.ftnode-note { padding: 1px 0 1px 18px; font-size: var(--fs-xs); color: var(--text-dim); }
+.ftnode-hit { background: var(--accent-soft); }
+
+/* ── 左树 · 视图切换（角色 / 项目） ──────────────────────────── */
+.side-switch {
+  flex: 0 0 auto;
+  display: flex; gap: 2px; padding: var(--sp-2) var(--sp-2) 0;
+}
+.side-switch-btn {
+  flex: 1 1 0; min-width: 0;
+  padding: 3px 4px; border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: transparent; color: var(--text-dim);
+  font-size: var(--fs-xs); cursor: pointer; white-space: nowrap;
+}
+.side-switch-btn:hover { background: var(--bg-panel-hover); color: var(--text); }
+.side-switch-btn.on {
+  background: var(--accent-soft); border-color: var(--accent); color: var(--text); font-weight: 600;
+}
+
+/* ── 项目视图：绑定目录（📂 带角色）vs 磁盘子项（📁） ────────── */
+.proj-tree { padding-top: var(--sp-1); }
+.projnode-row {
+  display: flex; align-items: center; gap: 4px;
+  padding: 3px var(--sp-2) 3px 4px; border-radius: var(--r-sm);
+  cursor: pointer; color: var(--text);
+  font-size: var(--fs-xs); white-space: nowrap;
+}
+.projnode-row:hover { background: var(--bg-panel-hover); }
+.projnode-row.locate { animation: proj-locate 2.4s ease-out; }
+@keyframes proj-locate {
+  0%, 30% { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+  100% { background: transparent; box-shadow: none; }
+}
+.projnode-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.projnode-subs { margin-left: 9px; padding-left: 6px; border-left: 1px solid var(--border); }
+
+/* 角色 chip：这个目录归谁 —— 一眼看出归属 */
+.proj-chip {
+  flex: 0 0 auto; max-width: 46%;
+  padding: 1px 5px; border: 1px solid var(--accent); border-radius: 999px;
+  background: var(--accent-soft); color: var(--text);
+  font-size: 10px; line-height: 1.5; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.proj-chip:hover { background: var(--accent); color: var(--bg); }
+
+/* ── 面包屑 ───────────────────────────────────────────────────── */
+.proj-crumb {
+  display: flex; align-items: center; gap: 3px; flex-wrap: wrap;
+  padding: 2px var(--sp-2) 4px;
+  font-size: var(--fs-xs); color: var(--text-dim);
+}
+.crumb {
+  padding: 1px 4px; border: 1px solid transparent; border-radius: var(--r-sm);
+  background: transparent; color: var(--text-dim);
+  font-size: var(--fs-xs); cursor: pointer; max-width: 130px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.crumb:hover { background: var(--bg-panel-hover); color: var(--text); }
+.crumb.on { color: var(--text); font-weight: 600; }
+.crumb-sep { color: var(--text-dim); opacity: .5; font-size: var(--fs-xs); }
+.crumb-dim { color: var(--text-dim); opacity: .7; font-size: var(--fs-xs); }
+
+/* ── 搜索（深目录翻文件） ─────────────────────────────────────── */
+.proj-search { padding: 0 var(--sp-2) var(--sp-2); }
+.ft-search {
+  width: 100%; padding: 3px var(--sp-2);
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg-soft); color: var(--text);
+  font-size: var(--fs-xs);
+}
+.ft-search:focus { outline: none; border-color: var(--accent); }
+.proj-search-res { max-height: 190px; overflow-y: auto; margin-top: 2px; }
+.proj-search-res .ftnode-name { white-space: normal; word-break: break-all; }
+
+/* 看文件内容的弹窗 */
+.dialog-card.wide { width: min(760px, 92vw); }
+.dialog-pre {
+  max-height: 56vh; overflow: auto; margin: var(--sp-2) 0;
+  padding: var(--sp-2); border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg-soft); color: var(--text);
+  font-family: var(--mono); font-size: 12px; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-all;
+}
+
 /* 右：选中角色的面板卡 */
 .cat-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: var(--sp-3); }
+/* 右栏空态：没选中角色时什么卡都不出，只留一句提示 */
+.cat-empty {
+  flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: var(--sp-2); padding: var(--sp-4) var(--sp-3); text-align: center;
+}
+.cat-empty-icon { font-size: 26px; color: var(--text-dim); opacity: .45; }
+.cat-empty-title { font-size: var(--fs-md); color: var(--text-dim); }
+.cat-empty-sub { font-size: var(--fs-sm); color: var(--text-dim); opacity: .75; max-width: 340px; line-height: 1.7; }
 .cat-main-head { display: flex; align-items: center; gap: var(--sp-3); flex: 0 0 auto; }
 .cat-main-icon {
   flex: 0 0 auto; width: 36px; height: 36px; display: grid; place-items: center;
@@ -921,8 +1055,12 @@ body { overflow: hidden; }
 
 /* ── 注册页 ───────────────────────────────────────────────────── */
 .registry { display: grid; grid-template-columns: 1fr 380px; gap: var(--sp-4); align-items: start; }
-.reg-list { display: flex; flex-direction: column; gap: var(--sp-2); }
+.reg-list { display: flex; flex-direction: column; gap: var(--sp-3); }
 .reg-h { font-size: var(--fs-sm); color: var(--text-dim); font-weight: 600; margin-bottom: var(--sp-2); }
+/* 已登记名单按分类分组 —— 分类是「枝」，角色是「叶」，跟场景页左树一个结构 */
+.reg-group { display: flex; flex-direction: column; gap: var(--sp-2); }
+.reg-group-head { display: flex; align-items: center; gap: var(--sp-2); padding: 0 2px; }
+.reg-group-name { font-size: var(--fs-xs); font-weight: 600; letter-spacing: .06em; color: var(--text-dim); }
 .reg-row {
   display: flex; align-items: center; gap: var(--sp-3);
   padding: 8px 12px; border: var(--line-1); border-radius: var(--r-sm);
@@ -930,7 +1068,6 @@ body { overflow: hidden; }
 }
 .reg-icon { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 7px; background: var(--accent-soft); color: var(--accent); }
 .reg-name { font-size: var(--fs-md); min-width: 72px; }
-.reg-cat { font-size: var(--fs-xs); color: var(--text-dim); min-width: 52px; }
 .reg-duty { flex: 1 1 auto; font-size: var(--fs-sm); color: var(--text-dim); }
 .reg-form {
   background: var(--bg-panel); border: var(--line-1); border-radius: var(--r-md);
@@ -948,7 +1085,17 @@ body { overflow: hidden; }
 }
 
 /* ── 记忆面板（项目信息分节） ─────────────────────────────────── */
-.mem-tabs { display: flex; gap: 4px; flex-wrap: wrap; flex: 0 0 auto; }
+/* 页签排成**一行**，窄面板里横向滚。
+   以前是 flex-wrap: wrap ⇒ 300px 宽的面板里 8 个页签要占两行（~50px），
+   挤掉正文区。现在永远一行：宽面板本来就放得下，窄面板省下一行的height。 */
+.mem-tabs {
+  display: flex; gap: 4px; flex-wrap: nowrap; flex: 0 0 auto;
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: thin;
+  padding-bottom: 2px;
+}
+.mem-tabs::-webkit-scrollbar { height: 4px; }
+.mem-tabs::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }
+.mem-tab { flex: 0 0 auto; }
 .mem-tab {
   border: 1px solid var(--border); background: var(--bg-soft); color: var(--text-dim);
   font: inherit; font-size: var(--fs-xs); padding: 3px 9px; border-radius: 999px; cursor: pointer;
@@ -956,11 +1103,48 @@ body { overflow: hidden; }
 .mem-tab:hover { color: var(--text); border-color: var(--accent); }
 .mem-tab.active { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
 .mem-editor { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; gap: var(--sp-2); }
-.mem-bar { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.mem-bar { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; flex: 0 0 auto; }
+
+/* ⚠ 面板正文区要撑满高度，否则手写内容只有两行高，下面全是空白。
+     .panel-body 本来是普通块容器（overflow:auto）⇒ .mem-editor 的 flex:1 根本不生效，
+     .note-area 的 min-height:100% 也因为父高是 auto 而塌掉。
+     ⇒ 记忆面板的正文区改成 flex 竖排：页签钉在顶上、输入框吃掉剩下的高度、底栏钉在底下。 */
+.panel-body[data-kind="memory"] { display: flex; flex-direction: column; overflow: hidden; }
+.mem-editor > .note-area { flex: 1 1 auto; min-height: 0; }
+/* 「留痕」页签的时间线也得占满剩下的高度（它内部自己滚） */
+.act-box.act-in-mem { flex: 1 1 auto; min-height: 0; }
 .mem-size { font-size: var(--fs-xs); font-family: var(--mono); color: var(--text-dim); }
 .mem-size.ok { color: var(--ok); }
 .mem-size.bad { color: var(--err); }
 .mem-prob { font-size: var(--fs-xs); color: var(--err); }
+
+/* 自动区（派生内容）：只读画出来，让人一眼看出「这段不是我手填的」 */
+.mem-auto {
+  border: 1px dashed var(--border); border-radius: var(--r-sm);
+  background: var(--bg-soft); padding: var(--sp-2) var(--sp-3); flex: 0 0 auto;
+  /* 窄面板里 §〇 那两行摘要必须**看得全**（开场先读的就是它）⇒ 给到六成高；
+     再长（§三 的台账表）就在自己框里滚。 */
+  max-height: 60%; overflow: auto;
+}
+.mem-auto-tag {
+  font-size: var(--fs-xs); color: var(--text-dim); letter-spacing: .04em;
+  border-bottom: 1px solid var(--border); padding-bottom: 2px; margin-bottom: 5px;
+}
+.mem-auto-body { font-size: var(--fs-xs); line-height: 1.7; }
+.mem-auto-body .md-tb { color: var(--text); }
+.mem-auto-body .md-p { color: var(--text); }
+
+/* 自动区里的表格（台账） */
+.md-tbl-wrap { overflow-x: auto; }
+.md-tbl-wrap .md-tbl {
+  border-collapse: collapse; width: 100%; font-size: var(--fs-xs);
+}
+.md-tbl-wrap .md-tbl th, .md-tbl-wrap .md-tbl td {
+  border-bottom: 1px solid var(--border); padding: 4px 6px; text-align: left;
+  white-space: nowrap; color: var(--text);
+}
+.md-tbl-wrap .md-tbl th { color: var(--text-dim); font-weight: 500; }
+.md-tbl-wrap .md-tbl tr:last-child td { border-bottom: none; }
 
 /* ── 身份卡 ───────────────────────────────────────────────────── */
 .id-card { display: flex; flex-direction: column; gap: var(--sp-2); height: 100%; }
@@ -1002,7 +1186,9 @@ body { overflow: hidden; }
 .health-detail { font-size: var(--fs-xs); color: var(--text-dim); line-height: 1.5; }
 
 /* ── 项目目录面板：把真实磁盘的文件夹挂到角色上 ─────────────────── */
-.proj-box { display: flex; flex-direction: column; gap: var(--sp-2); height: 100%; }
+/* ⚠ min-height 而不是 height:100% —— 树要有最小高度，
+ *   内容多了就交给 .panel-body 滚（面板本身是 overflow:auto）。 */
+.proj-box { display: flex; flex-direction: column; gap: var(--sp-2); min-height: 100%; }
 .proj-row { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
 .proj-cur {
   font-size: var(--fs-xs); color: var(--text-dim);
@@ -1019,15 +1205,60 @@ body { overflow: hidden; }
 .proj-input:focus { outline: none; border-color: var(--accent); }
 .proj-hint { font-size: var(--fs-xs); color: var(--text-dim); }
 .proj-list {
-  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  flex: 1 1 auto; min-height: 160px; overflow-y: auto;
   border: 1px solid var(--border); border-radius: var(--r-sm);
   background: var(--bg-soft);
 }
 .proj-list .file-row { padding: 3px var(--sp-2); }
 
+/* ── 文件树（VS Code 那种：文件夹能展开、能新建） ───────────────── */
+.proj-tools { display: flex; align-items: center; gap: var(--sp-1); flex-wrap: wrap; }
+.ftree { padding: 2px 0; font-size: var(--fs-xs); }
+.ftree-row {
+  display: flex; align-items: center; gap: 5px;
+  padding: 2px 6px; cursor: pointer; white-space: nowrap; line-height: 1.6;
+  border-radius: 4px;
+}
+.ftree-row:hover { background: var(--bg-panel-hover); }
+.ftree-row.sel { background: var(--accent-soft); }
+.ftree-row.is-dir .ftree-name { color: var(--text); }
+.ftree-row.is-file .ftree-name { color: var(--text-dim); }
+.ftree-row.is-file:hover .ftree-name { color: var(--text); }
+.ftree-chev {
+  flex: 0 0 12px; width: 12px; text-align: center;
+  color: var(--text-dim); font-size: 10px; user-select: none;
+}
+.ftree-icon { flex: 0 0 auto; font-size: 12px; }
+/* 文件名**不截断**：窄条里截成「package-lo...」根本没法认，
+   现在这个面板宽两栏了，直接换行显示全名。 */
+.ftree-name { flex: 1 1 auto; min-width: 0; white-space: normal; word-break: break-all; }
+.ftree-size { flex: 0 0 auto; color: var(--text-dim); font-size: 11px; }
+.ftree-empty { padding: 1px 8px 1px 26px; color: var(--text-dim); font-size: var(--fs-xs); }
+.ftree-hit { background: var(--accent-soft); }
+.ftree-hit:hover { background: var(--accent-soft); }
+.ftree-input {
+  flex: 1 1 auto; min-width: 0;
+  border: 1px solid var(--accent); border-radius: 4px;
+  background: var(--bg); color: var(--text);
+  font: inherit; font-size: var(--fs-xs); padding: 1px 5px;
+}
+.ftree-input:focus { outline: none; }
+.ftree-preview {
+  flex: 0 0 auto; max-height: 38%; overflow: auto;
+  border-top: 1px solid var(--border); padding: var(--sp-2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px; line-height: 1.5; color: var(--text-dim);
+  white-space: pre-wrap; word-break: break-all;
+}
+
 /* 卡片上「这个角色挂了项目目录」的标记 */
 .scene-name-row { display: flex; align-items: center; gap: var(--sp-2); }
-.scene-proj { font-size: 12px; opacity: .8; cursor: help; }
+/* 角色行上的「📁」标记：现在能点了 ⇒ 点它跳到项目视图定位 */
+.scene-proj {
+  flex: 0 0 auto; padding: 0 2px; border: none; background: transparent;
+  font-size: 12px; opacity: .8; cursor: pointer; line-height: 1;
+}
+.scene-proj:hover { opacity: 1; }
 
 /* ── 上传：把文件拖进角色目录 ─────────────────────────────────── */
 .up-box {
@@ -1037,7 +1268,7 @@ body { overflow: hidden; }
 }
 .up-drop {
   border: 1px dashed var(--border); border-radius: var(--r-sm);
-  padding: var(--sp-3); text-align: center;
+  padding: var(--sp-1) var(--sp-2); text-align: center;
   font-size: var(--fs-xs); color: var(--text-dim);
   background: var(--bg-soft);
   transition: border-color var(--dur), background var(--dur), color var(--dur);
