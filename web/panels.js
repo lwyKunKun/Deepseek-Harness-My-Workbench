@@ -2511,7 +2511,12 @@ PANELS.identity = function (body, meta, head) {
   var save = wbEl('button', 'panel-btn solid', '保存');
   save.addEventListener('click', function () {
     wbApi('POST', '/api/memory', { scene: scene, card: true, text: ta.value }).then(function (r) {
-      if (r && r.ok) wbToast('身份卡已存');
+      if (r && r.ok) {
+        wbToast('身份卡已存');
+        // 卡的「职责」「技能」是界面头部那两处的**唯一出处**（后端从卡里派生）
+        //   ⇒ 存完立刻重新拉场景数据，头部那行职责、那排技能标签当场跟着变。
+        if (typeof refreshSceneList === 'function') refreshSceneList();
+      }
       else wbToast('没存成', true);
     });
   });

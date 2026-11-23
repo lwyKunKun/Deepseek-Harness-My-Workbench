@@ -1317,7 +1317,7 @@ export async function handleRequest(req, res) {
         ],
       };
       writeJson(path.join(PATHS.scenarios, id + '.json'), sc);
-      mem.scaffold(id, { name, duty: sc.duty });
+      mem.scaffold(id, { name, duty: sc.duty, skills: sc.skills });
       // ⚠ 同时登记进地盘表 —— 不登记的话，它的记忆目录算「未登记」，
       //   按规矩是 C 档 ⇒ 它连自己的记忆都写不了（闸会拦）。
       const reg = authority.registerScene(id, { name, duty: sc.duty });

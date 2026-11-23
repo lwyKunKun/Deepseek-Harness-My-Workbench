@@ -538,6 +538,9 @@ function sideLeaf(s, active) {
     saveSelected(s.id);
     wbAct(s.id, '选中场景', s.name);
     render();
+    // 换个角色 ⇒ 头部那行职责/技能标签得是**这个**角色的 ⇒ 重新拉一次场景数据
+    //   （身份卡改了但界面没跟上，就是漏了这一步）
+    refreshSceneList();
   });
   makeDraggable(row, s.id);
   makeDropTarget(row, s.id, false);
@@ -1371,7 +1374,12 @@ function renderSceneDetail(id) {
 
   var head = el('div', 'detail-head');
   var back = el('button', 'panel-btn', '← 场景');
-  back.addEventListener('click', function () { STATE.open = null; render(); });
+  back.addEventListener('click', function () {
+    STATE.open = null;
+    render();
+    // 回列表页 ⇒ 头部要显示最新的职责/技能（身份卡可能刚在详情页里改过）
+    refreshSceneList();
+  });
   head.appendChild(back);
   head.appendChild(el('div', 'detail-icon', sc.icon || '●'));
   var nm = el('div', 'detail-names');
@@ -2008,6 +2016,39 @@ function refreshScenes() {
   });
 }
 
+/**
+ * 只刷新场景列表（不打 /api/state —— 那个会顺手探一次引擎，慢）。
+ *
+ * 什么时候用：**身份卡改了之后**。
+ *   卡的「职责」「技能」是这两处显示的唯一出处（后端 loadScenes() 从卡里派生），
+ *   所以改完卡要把场景数据重新拉一遍，头部那行职责和那排技能标签才跟着变。
+ *
+ * ⚠ 在**详情页**时不重画整个视图 —— 那会把别的面板里正在写的内容冲掉。
+ *   只改详情页标题下的那行职责。
+ * ⚠ 数据没变就**不重画**（免得点一下角色闪一下）。
+ */
+function refreshSceneList() {
+  return api('GET', '/api/scenes').then(function (r) {
+    if (!r || !r.ok) return;
+    var next = r.scenes || [];
+    var changed = next.length !== STATE.scenes.length || next.some(function (s, i) {
+      var old = STATE.scenes[i];
+      return !old || old.id !== s.id || old.duty !== s.duty
+        || String(old.skills || '') !== String(s.skills || '');
+    });
+    STATE.scenes = next;
+    if (!changed) return;
+    if (STATE.open) {
+      // 详情页：只更新标题下的职责，别重建面板（会把正在写的内容冲掉）
+      var sc = next.filter(function (s) { return s.id === STATE.open; })[0];
+      var duty = DOM.view ? DOM.view.querySelector('.detail-duty') : null;
+      if (sc && duty) duty.textContent = sc.duty || sc.description || '';
+      return;
+    }
+    render();
+  });
+}
+
 /** 顶栏的样子（独立页的 index.html 与插件挂载共用同一份，免得两处走样）。 */
 function wbShellHtml() {
   return [
@@ -2074,6 +2115,13 @@ function mountWorkbench(root, opts) {
       if (r && r.engine) setEngineStatus(!!r.engine.up, r.engine.up ? '引擎已连' : '引擎未连');
     }).catch(function () { /* ignore */ });
   }, 5000);
+
+  // 切回这个标签页 ⇒ 场景数据可能已经变了（在 Obsidian 里改了身份卡、在别处建了角色…）
+  //   ⇒ 重新拉一次。⚠ 只在**列表页**刷（refreshSceneList 自己在详情页只改标题那行，
+  //   不会重建面板 ⇒ 面板里正在写的内容不会丢）。
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') refreshSceneList();
+  });
 
   return function dispose() {
     clearInterval(timer);
